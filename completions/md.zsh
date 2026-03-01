@@ -33,29 +33,12 @@ _md() {
                         '*:file:_files -g "*.md"'
                     ;;
                 frontmatter)
-                    local -a subcmds=(
-                        'set:Set frontmatter fields'
-                        'delete:Delete frontmatter fields'
-                    )
-                    _arguments -C \
+                    _arguments \
                         $global_opts \
-                        '1:subcommand:->subcmd' \
+                        '-i[Edit file in-place]' \
+                        '*--set[Set a field (key=value)]:key=value:' \
+                        '*--del[Delete a field]:key:' \
                         '*:file:_files -g "*.md"'
-
-                    case "$state" in
-                        subcmd)
-                            _describe -t subcmds 'frontmatter subcommand' subcmds
-                            _files -g '*.md'
-                            ;;
-                    esac
-
-                    case "${words[1]}" in
-                        set|delete)
-                            _arguments \
-                                '-i[Edit file in-place]' \
-                                '*:file:_files -g "*.md"'
-                            ;;
-                    esac
                     ;;
                 links)
                     _arguments \

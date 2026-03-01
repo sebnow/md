@@ -176,113 +176,62 @@ fn cmdBody(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Outpu
 }
 
 fn cmdFrontmatter(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
-    // Peek at next arg to check for sub-subcommands (set, delete)
-    const first_arg = iter.next();
-    if (first_arg) |sub| {
-        if (std.mem.eql(u8, sub, "set")) {
-            return cmdFrontmatterSet(arena, iter, out);
-        }
-        if (std.mem.eql(u8, sub, "delete")) {
-            return cmdFrontmatterDelete(arena, iter, out);
-        }
-    }
-
-    // Regular frontmatter output — re-parse args with first_arg as potential file/flag
-    var args: Args = .{};
-    if (first_arg) |a| {
-        if (std.mem.eql(u8, a, "--json")) {
-            args.json = true;
-        } else if (a.len > 0 and a[0] != '-') {
-            args.positional = a;
-        }
-    }
-    const more = parseArgs(iter);
-    if (more.json) args.json = true;
-    if (args.positional == null) args.positional = more.positional;
-    if (args.file == null) args.file = more.file;
-
-    const content = try readInput(arena, args);
-
-    if (md.frontmatter.extract(content)) |fm| {
-        try out.write(fm.raw);
-    }
-}
-
-fn cmdFrontmatterSet(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
     var in_place = false;
+    var json = false;
     var file_path: ?[]const u8 = null;
     var ops: std.ArrayListUnmanaged(md.frontmatter.FieldOp) = .empty;
 
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "-i")) {
             in_place = true;
-        } else if (arg.len > 0 and arg[0] == '-') {
-            continue;
-        } else if (file_path == null) {
-            file_path = arg;
-        } else {
-            // key-value pair: this arg is the key, next is the value
-            const value = iter.next() orelse {
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            json = true;
+        } else if (std.mem.eql(u8, arg, "--set")) {
+            const kv = iter.next() orelse return error.MissingArgument;
+            if (std.mem.indexOfScalar(u8, kv, '=')) |eq| {
+                try ops.append(arena, .{ .set = .{
+                    .key = kv[0..eq],
+                    .value = kv[eq + 1 ..],
+                } });
+            } else {
                 return error.MissingArgument;
-            };
-            try ops.append(arena, .{ .set = .{ .key = arg, .value = value } });
-        }
-    }
-
-    const path = file_path orelse return error.MissingArgument;
-    if (ops.items.len == 0) return error.MissingArgument;
-
-    const content = blk: {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        break :blk try file.readToEndAlloc(arena, max_file_size);
-    };
-
-    const result = try md.frontmatter.editFields(arena, content, ops.items);
-
-    if (in_place) {
-        const out_file = try std.fs.cwd().createFile(path, .{});
-        defer out_file.close();
-        try out_file.writeAll(result);
-    } else {
-        try out.write(result);
-    }
-}
-
-fn cmdFrontmatterDelete(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
-    var in_place = false;
-    var file_path: ?[]const u8 = null;
-    var ops: std.ArrayListUnmanaged(md.frontmatter.FieldOp) = .empty;
-
-    while (iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-i")) {
-            in_place = true;
+            }
+        } else if (std.mem.eql(u8, arg, "--del")) {
+            const key = iter.next() orelse return error.MissingArgument;
+            try ops.append(arena, .{ .delete = key });
         } else if (arg.len > 0 and arg[0] == '-') {
             continue;
         } else if (file_path == null) {
             file_path = arg;
-        } else {
-            try ops.append(arena, .{ .delete = arg });
         }
     }
 
-    const path = file_path orelse return error.MissingArgument;
-    if (ops.items.len == 0) return error.MissingArgument;
+    if (ops.items.len > 0) {
+        // Edit mode: apply ops
+        const path = file_path orelse return error.MissingArgument;
+        const content = blk: {
+            const file = try std.fs.cwd().openFile(path, .{});
+            defer file.close();
+            break :blk try file.readToEndAlloc(arena, max_file_size);
+        };
 
-    const content = blk: {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        break :blk try file.readToEndAlloc(arena, max_file_size);
-    };
+        const result = try md.frontmatter.editFields(arena, content, ops.items);
 
-    const result = try md.frontmatter.editFields(arena, content, ops.items);
-
-    if (in_place) {
-        const out_file = try std.fs.cwd().createFile(path, .{});
-        defer out_file.close();
-        try out_file.writeAll(result);
+        if (in_place) {
+            const out_file = try std.fs.cwd().createFile(path, .{});
+            defer out_file.close();
+            try out_file.writeAll(result);
+        } else {
+            try out.write(result);
+        }
     } else {
-        try out.write(result);
+        // Read mode: output frontmatter
+        const args: Args = .{ .json = json, .positional = file_path };
+        const content = try readInput(arena, args);
+
+        if (md.frontmatter.extract(content)) |fm| {
+            try out.write(fm.raw);
+        }
     }
 }
 

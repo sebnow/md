@@ -19,19 +19,19 @@ Read and write YAML frontmatter.
 md frontmatter notes.md
 
 # Set fields (stdout by default)
-md frontmatter set notes.md title "My Note"
+md frontmatter notes.md --set title="My Note"
 
-# Set multiple fields at once
-md frontmatter set notes.md title "My Note" draft true status published
-
-# Edit in-place (like sed -i)
-md frontmatter set -i notes.md title "My Note" draft true
+# Set multiple fields
+md frontmatter notes.md --set title="My Note" --set draft=true
 
 # Delete fields
-md frontmatter delete notes.md draft tags
+md frontmatter notes.md --del draft --del tags
 
-# Delete in-place
-md frontmatter delete -i notes.md draft
+# Mix set and delete
+md frontmatter notes.md --set title=New --del draft
+
+# Edit in-place (like sed -i)
+md frontmatter -i notes.md --set title="My Note" --del draft
 ```
 
 ### Body

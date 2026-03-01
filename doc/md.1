@@ -28,20 +28,21 @@ for structured output.
 .Bl -tag -width "frontmatter"
 .It Ic body Op Ar file
 Output the document body without frontmatter.
-.It Ic frontmatter Op Ar file
+.It Ic frontmatter Oo Fl -json Oc Op Ar file
 Output raw YAML frontmatter.
-.It Ic frontmatter set Oo Fl i Oc Ar file Ar key Ar value Op Ar key Ar value ...
-Set one or more frontmatter fields.
-Multiple key-value pairs can be specified.
-If the key already exists, its value is replaced.
+.It Ic frontmatter Oo Fl i Oc Ar file Fl -set Ar key Ns = Ns Ar value Op Fl -del Ar key ...
+Edit frontmatter fields.
+.Fl -set
+and
+.Fl -del
+flags can be repeated and mixed freely.
+.Pp
+.Fl -set Ar key Ns = Ns Ar value
+sets a field. If the key exists, its value is replaced.
 If no frontmatter exists, one is created.
 .Pp
-Output goes to standard output by default.
-Use
-.Fl i
-to edit the file in-place.
-.It Ic frontmatter delete Oo Fl i Oc Ar file Ar key Op Ar key ...
-Delete one or more frontmatter fields.
+.Fl -del Ar key
+deletes a field.
 .Pp
 Output goes to standard output by default.
 Use
@@ -90,8 +91,14 @@ Output in JSON format.
 .It Fl -help
 Show usage information.
 .It Fl i
-.Pq Ic frontmatter set No and Ic frontmatter delete No only
+.Pq Ic frontmatter No with Fl -set No or Fl -del No only
 Edit the file in-place instead of writing to standard output.
+.It Fl -set Ar key Ns = Ns Ar value
+.Pq Ic frontmatter No only
+Set a frontmatter field. Can be repeated.
+.It Fl -del Ar key
+.Pq Ic frontmatter No only
+Delete a frontmatter field. Can be repeated.
 .It Fl -incoming
 .Pq Ic links No only
 Scan for incoming links instead of listing outgoing links.
@@ -109,10 +116,13 @@ List headings as JSON:
 .Dl md headings --json notes.md | jq '.[] | select(.depth == 2)'
 .Pp
 Set multiple frontmatter fields in-place:
-.Dl md frontmatter set -i notes.md title \(dqMy Note\(dq draft true
+.Dl md frontmatter -i notes.md --set title=\(dqMy Note\(dq --set draft=true
 .Pp
 Delete frontmatter fields:
-.Dl md frontmatter delete -i notes.md draft tags
+.Dl md frontmatter -i notes.md --del draft --del tags
+.Pp
+Mix set and delete:
+.Dl md frontmatter notes.md --set status=published --del draft
 .Pp
 Find all files linking to a note:
 .Dl md links --incoming notes.md --dir ./vault/

@@ -14,24 +14,17 @@ _md() {
 
     case "$cmd" in
         frontmatter)
-            if ((cword == 2)); then
-                COMPREPLY=($(compgen -W "set delete --json" -- "$cur"))
-                _filedir 'md'
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--json --set --del -i" -- "$cur"))
+            elif [[ "$prev" == "--set" ]]; then
+                # Expect key=value, no completion
                 return
+            elif [[ "$prev" == "--del" ]]; then
+                # Expect key, no completion
+                return
+            else
+                _filedir 'md'
             fi
-            case "${words[2]}" in
-                set|delete)
-                    if [[ "$cur" == -* ]]; then
-                        COMPREPLY=($(compgen -W "-i" -- "$cur"))
-                    else
-                        _filedir 'md'
-                    fi
-                    ;;
-                *)
-                    COMPREPLY=($(compgen -W "$global_opts" -- "$cur"))
-                    _filedir 'md'
-                    ;;
-            esac
             ;;
         links)
             if [[ "$cur" == -* ]]; then
@@ -42,14 +35,7 @@ _md() {
                 _filedir 'md'
             fi
             ;;
-        body|headings|tags|codeblocks|stats)
-            if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "$global_opts" -- "$cur"))
-            else
-                _filedir 'md'
-            fi
-            ;;
-        section)
+        body|headings|tags|codeblocks|stats|section)
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "$global_opts" -- "$cur"))
             else

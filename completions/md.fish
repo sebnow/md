@@ -11,13 +11,11 @@ for cmd in body headings tags codeblocks stats section
 end
 
 # frontmatter
-complete -c md -n "__fish_seen_subcommand_from frontmatter; and not __fish_seen_subcommand_from set delete" -a "set delete" -d "Edit frontmatter"
-complete -c md -n "__fish_seen_subcommand_from frontmatter; and not __fish_seen_subcommand_from set delete" -l json -d "Output in JSON format"
-complete -c md -n "__fish_seen_subcommand_from frontmatter; and not __fish_seen_subcommand_from set delete" -F -r
-
-# frontmatter set/delete
-complete -c md -n "__fish_seen_subcommand_from frontmatter; and __fish_seen_subcommand_from set delete" -s i -d "Edit file in-place"
-complete -c md -n "__fish_seen_subcommand_from frontmatter; and __fish_seen_subcommand_from set delete" -F -r
+complete -c md -n "__fish_seen_subcommand_from frontmatter" -l json -d "Output in JSON format"
+complete -c md -n "__fish_seen_subcommand_from frontmatter" -s i -d "Edit file in-place"
+complete -c md -n "__fish_seen_subcommand_from frontmatter" -l set -d "Set a field (key=value)" -r
+complete -c md -n "__fish_seen_subcommand_from frontmatter" -l del -d "Delete a field" -r
+complete -c md -n "__fish_seen_subcommand_from frontmatter" -F -r
 
 # links
 complete -c md -n "__fish_seen_subcommand_from links" -l json -d "Output in JSON format"

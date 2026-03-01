@@ -74,6 +74,8 @@ fn run(arena: std.mem.Allocator) !void {
 
 const Args = struct {
     json: bool = false,
+    incoming: bool = false,
+    dir: ?[]const u8 = null,
     file: ?[]const u8 = null,
     positional: ?[]const u8 = null,
 };
@@ -83,10 +85,13 @@ fn parseArgs(iter: *std.process.ArgIterator) Args {
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--json")) {
             result.json = true;
+        } else if (std.mem.eql(u8, arg, "--incoming")) {
+            result.incoming = true;
+        } else if (std.mem.eql(u8, arg, "--dir")) {
+            result.dir = iter.next();
         } else if (arg.len > 0 and arg[0] == '-') {
             // Ignore unknown flags for forward compatibility
         } else if (result.positional == null and result.file == null) {
-            // First positional — could be either a sub-argument or file
             result.positional = arg;
         } else if (result.file == null) {
             result.file = arg;
@@ -168,6 +173,11 @@ fn cmdHeadings(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
 
 fn cmdLinks(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
     const args = parseArgs(iter);
+
+    if (args.incoming) {
+        return cmdLinksIncoming(arena, args);
+    }
+
     const content = try readInput(arena, args);
     const parsed_links = try md.links.parse(arena, content);
 
@@ -181,6 +191,145 @@ fn cmdLinks(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
             try writeAll(stdOut(), "\n");
         }
     }
+}
+
+const IncomingLink = struct {
+    source_path: []const u8,
+    link: md.links.Link,
+};
+
+fn cmdLinksIncoming(arena: std.mem.Allocator, args: Args) !void {
+    const target_path = args.positional orelse {
+        try writeAll(stdErr(), "md links --incoming: missing file argument\n");
+        return error.MissingArgument;
+    };
+
+    // Resolve target to canonical form for comparison
+    const target_basename = std.fs.path.stem(target_path);
+    const target_dir = std.fs.path.dirname(target_path);
+
+    const scan_dir_path = args.dir orelse target_dir orelse ".";
+
+    var incoming: std.ArrayListUnmanaged(IncomingLink) = .empty;
+
+    var dir = std.fs.cwd().openDir(scan_dir_path, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) {
+            try writeAll(stdErr(), "md: directory not found: ");
+            try writeAll(stdErr(), scan_dir_path);
+            try writeAll(stdErr(), "\n");
+        }
+        return err;
+    };
+    defer dir.close();
+
+    try scanDirForLinks(arena, dir, scan_dir_path, target_path, target_basename, &incoming);
+
+    if (args.json) {
+        try writeAll(stdOut(), "[");
+        for (incoming.items, 0..) |item, idx| {
+            if (idx > 0) try writeAll(stdOut(), ",");
+            try writeAll(stdOut(), "{\"source\":\"");
+            try writeJsonEscaped(stdOut(), item.source_path);
+            try writeAll(stdOut(), "\",\"kind\":\"");
+            try writeAll(stdOut(), @tagName(item.link.kind));
+            try writeAll(stdOut(), "\",\"line\":");
+            var buf: [32]u8 = undefined;
+            try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{item.link.line}) catch unreachable);
+            try writeAll(stdOut(), "}");
+        }
+        try writeAll(stdOut(), "]\n");
+    } else {
+        for (incoming.items) |item| {
+            try writeAll(stdOut(), item.source_path);
+            try writeAll(stdOut(), "\t");
+            try writeAll(stdOut(), @tagName(item.link.kind));
+            var buf: [32]u8 = undefined;
+            try writeAll(stdOut(), "\t");
+            try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{item.link.line}) catch unreachable);
+            try writeAll(stdOut(), "\n");
+        }
+    }
+}
+
+fn scanDirForLinks(
+    arena: std.mem.Allocator,
+    dir: std.fs.Dir,
+    dir_path: []const u8,
+    target_path: []const u8,
+    target_basename: []const u8,
+    incoming: *std.ArrayListUnmanaged(IncomingLink),
+) !void {
+    var walker = try dir.walk(arena);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!isMarkdownFile(entry.basename)) continue;
+
+        const source_path = try std.fs.path.join(arena, &.{ dir_path, entry.path });
+
+        // Don't scan the target file itself
+        if (std.mem.eql(u8, source_path, target_path)) continue;
+
+        const file = dir.openFile(entry.path, .{}) catch continue;
+        defer file.close();
+        const content = file.readToEndAlloc(arena, max_file_size) catch continue;
+
+        const links = try md.links.parse(arena, content);
+        for (links) |link| {
+            if (linkMatchesTarget(link, target_path, target_basename, source_path)) {
+                try incoming.append(arena, .{
+                    .source_path = source_path,
+                    .link = link,
+                });
+            }
+        }
+    }
+}
+
+fn linkMatchesTarget(
+    link: md.links.Link,
+    target_path: []const u8,
+    target_basename: []const u8,
+    source_path: []const u8,
+) bool {
+    const link_target = link.target;
+
+    // Wikilinks match by basename (without extension)
+    if (link.kind == .wikilink or link.kind == .embed) {
+        // Strip anchor (#section) from wikilink target
+        const name = if (std.mem.indexOfScalar(u8, link_target, '#')) |hash_pos|
+            link_target[0..hash_pos]
+        else
+            link_target;
+        return std.mem.eql(u8, name, target_basename);
+    }
+
+    // Standard/image links: resolve relative to the source file's directory
+    const source_dir = std.fs.path.dirname(source_path) orelse ".";
+    const resolved = std.fs.path.resolve(
+        std.heap.page_allocator,
+        &.{ source_dir, link_target },
+    ) catch return false;
+
+    const target_resolved = std.fs.path.resolve(
+        std.heap.page_allocator,
+        &.{target_path},
+    ) catch return false;
+
+    return std.mem.eql(u8, resolved, target_resolved);
+}
+
+fn isMarkdownFile(name: []const u8) bool {
+    const lower_ext = blk: {
+        if (std.mem.endsWith(u8, name, ".md")) break :blk true;
+        if (std.mem.endsWith(u8, name, ".MD")) break :blk true;
+        if (std.mem.endsWith(u8, name, ".markdown")) break :blk true;
+        if (std.mem.endsWith(u8, name, ".Markdown")) break :blk true;
+        if (std.mem.endsWith(u8, name, ".MARKDOWN")) break :blk true;
+        break :blk false;
+    };
+    return lower_ext;
 }
 
 fn cmdTags(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {

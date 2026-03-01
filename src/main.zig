@@ -6,7 +6,7 @@ const usage =
     \\
     \\Commands:
     \\  body         Output document body without frontmatter
-    \\  frontmatter  Output or edit YAML frontmatter
+    \\  frontmatter  Output or edit YAML frontmatter (alias: fm)
     \\  headings     List headings with depth and line numbers
     \\  links        List outgoing links
     \\  tags         List tags
@@ -94,6 +94,7 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
     const handlers = .{
         .{ "body", cmdBody },
         .{ "frontmatter", cmdFrontmatter },
+        .{ "fm", cmdFrontmatter },
         .{ "headings", cmdHeadings },
         .{ "links", cmdLinks },
         .{ "tags", cmdTags },
@@ -208,20 +209,21 @@ fn cmdFrontmatter(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out:
 
     if (ops.items.len > 0) {
         // Edit mode: apply ops
-        const path = file_path orelse return error.MissingArgument;
-        const content = blk: {
-            const file = try std.fs.cwd().openFile(path, .{});
-            defer file.close();
-            break :blk try file.readToEndAlloc(arena, max_file_size);
-        };
-
-        const result = try md.frontmatter.editFields(arena, content, ops.items);
-
         if (in_place) {
+            const path = file_path orelse return error.MissingArgument;
+            const content = blk: {
+                const file = try std.fs.cwd().openFile(path, .{});
+                defer file.close();
+                break :blk try file.readToEndAlloc(arena, max_file_size);
+            };
+            const result = try md.frontmatter.editFields(arena, content, ops.items);
             const out_file = try std.fs.cwd().createFile(path, .{});
             defer out_file.close();
             try out_file.writeAll(result);
         } else {
+            const args: Args = .{ .positional = file_path };
+            const content = try readInput(arena, args);
+            const result = try md.frontmatter.editFields(arena, content, ops.items);
             try out.write(result);
         }
     } else {

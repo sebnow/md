@@ -2,7 +2,7 @@ _md() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="body frontmatter headings links tags codeblocks stats section"
+    local commands="body frontmatter fm headings links tags codeblocks stats section"
     local global_opts="--json --help"
 
     if ((cword == 1)); then
@@ -13,7 +13,7 @@ _md() {
     local cmd="${words[1]}"
 
     case "$cmd" in
-        frontmatter)
+        frontmatter|fm)
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "--json --set --del -i" -- "$cur"))
             elif [[ "$prev" == "--set" ]]; then

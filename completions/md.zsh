@@ -4,6 +4,7 @@ _md() {
     local -a commands=(
         'body:Output document body without frontmatter'
         'frontmatter:Output or edit frontmatter'
+        'fm:Output or edit frontmatter (alias)'
         'headings:List headings with depth and line numbers'
         'links:List outgoing or incoming links'
         'tags:Extract tags'
@@ -32,7 +33,7 @@ _md() {
                         $global_opts \
                         '*:file:_files -g "*.md"'
                     ;;
-                frontmatter)
+                frontmatter|fm)
                     _arguments \
                         $global_opts \
                         '-i[Edit file in-place]' \

@@ -1,4 +1,4 @@
-set -l commands body frontmatter headings links tags codeblocks stats section
+set -l commands body frontmatter fm headings links tags codeblocks stats section
 
 complete -c md -f
 complete -c md -n "not __fish_seen_subcommand_from $commands" -a "$commands"
@@ -10,12 +10,14 @@ for cmd in body headings tags codeblocks stats section
     complete -c md -n "__fish_seen_subcommand_from $cmd" -F -r
 end
 
-# frontmatter
-complete -c md -n "__fish_seen_subcommand_from frontmatter" -l json -d "Output in JSON format"
-complete -c md -n "__fish_seen_subcommand_from frontmatter" -s i -d "Edit file in-place"
-complete -c md -n "__fish_seen_subcommand_from frontmatter" -l set -d "Set a field (key=value)" -r
-complete -c md -n "__fish_seen_subcommand_from frontmatter" -l del -d "Delete a field" -r
-complete -c md -n "__fish_seen_subcommand_from frontmatter" -F -r
+# frontmatter / fm
+for cmd in frontmatter fm
+    complete -c md -n "__fish_seen_subcommand_from $cmd" -l json -d "Output in JSON format"
+    complete -c md -n "__fish_seen_subcommand_from $cmd" -s i -d "Edit file in-place"
+    complete -c md -n "__fish_seen_subcommand_from $cmd" -l set -d "Set a field (key=value)" -r
+    complete -c md -n "__fish_seen_subcommand_from $cmd" -l del -d "Delete a field" -r
+    complete -c md -n "__fish_seen_subcommand_from $cmd" -F -r
+end
 
 # links
 complete -c md -n "__fish_seen_subcommand_from links" -l json -d "Output in JSON format"

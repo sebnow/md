@@ -13,17 +13,25 @@ preferring best-effort results over strict errors.
 ### Frontmatter
 
 Read and write YAML frontmatter.
-Output as JSON for use with `jq`.
 
 ```sh
-# Extract frontmatter as JSON
-md frontmatter notes.md | jq '.tags'
+# Extract raw frontmatter
+md frontmatter notes.md
 
-# Set a frontmatter field
+# Set fields (stdout by default)
 md frontmatter set notes.md title "My Note"
 
-# Delete a frontmatter field
-md frontmatter delete notes.md draft
+# Set multiple fields at once
+md frontmatter set notes.md title "My Note" draft true status published
+
+# Edit in-place (like sed -i)
+md frontmatter set -i notes.md title "My Note" draft true
+
+# Delete fields
+md frontmatter delete notes.md draft tags
+
+# Delete in-place
+md frontmatter delete -i notes.md draft
 ```
 
 ### Body
@@ -99,6 +107,7 @@ md stats notes.md
 - YAML frontmatter (delimited by `---`)
 - ATX headings (`# H1` through `###### H6`)
 - Fenced code blocks (backtick and tilde)
+- Indented code blocks (4+ spaces or tab)
 - Inline tags (`#tag`)
 
 ## Design

@@ -232,7 +232,12 @@ fn cmdFrontmatter(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out:
         const content = try readInput(arena, args);
 
         if (md.frontmatter.extract(content)) |fm| {
-            try out.write(fm.raw);
+            if (json) {
+                const j = try md.frontmatter.toJson(arena, fm.raw);
+                try out.write(j);
+            } else {
+                try out.write(fm.raw);
+            }
         }
     }
 }

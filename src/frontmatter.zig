@@ -61,6 +61,129 @@ fn nextLine(content: []const u8, pos: usize) usize {
     return i;
 }
 
+pub const FieldOp = union(enum) {
+    set: struct { key: []const u8, value: []const u8 },
+    delete: []const u8,
+};
+
+/// Apply a sequence of set/delete operations to YAML frontmatter.
+/// If no frontmatter exists and there are set operations, one is created.
+/// Returns a newly allocated string with the modified content.
+pub fn editFields(allocator: std.mem.Allocator, content: []const u8, ops: []const FieldOp) std.mem.Allocator.Error![]const u8 {
+    var result: std.ArrayListUnmanaged(u8) = .empty;
+
+    if (extract(content)) |fm| {
+        const opening_end = @intFromPtr(fm.raw.ptr) - @intFromPtr(content.ptr);
+        try result.appendSlice(allocator, content[0..opening_end]);
+
+        // Track which set ops have been applied (replaced an existing key)
+        var applied = try allocator.alloc(bool, ops.len);
+        defer allocator.free(applied);
+        @memset(applied, false);
+
+        // Write existing lines, applying replacements and deletions
+        var pos: usize = 0;
+        while (pos < fm.raw.len) {
+            const line_start = pos;
+            pos = nextLine(fm.raw, pos);
+
+            const line = fm.raw[line_start..pos];
+            var deleted = false;
+
+            for (ops, 0..) |op, i| {
+                switch (op) {
+                    .set => |s| {
+                        if (matchesKey(fm.raw[line_start..], s.key)) {
+                            try result.appendSlice(allocator, s.key);
+                            try result.appendSlice(allocator, ": ");
+                            try result.appendSlice(allocator, s.value);
+                            try result.appendSlice(allocator, "\n");
+                            applied[i] = true;
+                            deleted = true;
+                            break;
+                        }
+                    },
+                    .delete => |key| {
+                        if (matchesKey(fm.raw[line_start..], key)) {
+                            deleted = true;
+                            break;
+                        }
+                    },
+                }
+            }
+
+            if (!deleted) {
+                try result.appendSlice(allocator, line);
+            }
+        }
+
+        // Append any set ops that didn't replace an existing key
+        for (ops, 0..) |op, i| {
+            switch (op) {
+                .set => |s| {
+                    if (!applied[i]) {
+                        try result.appendSlice(allocator, s.key);
+                        try result.appendSlice(allocator, ": ");
+                        try result.appendSlice(allocator, s.value);
+                        try result.appendSlice(allocator, "\n");
+                    }
+                },
+                .delete => {},
+            }
+        }
+
+        const body_with_delimiter = content[opening_end + fm.raw.len ..];
+        try result.appendSlice(allocator, body_with_delimiter);
+    } else {
+        // No frontmatter — create one if there are set ops
+        var has_sets = false;
+        for (ops) |op| {
+            if (op == .set) {
+                has_sets = true;
+                break;
+            }
+        }
+
+        if (has_sets) {
+            try result.appendSlice(allocator, "---\n");
+            for (ops) |op| {
+                switch (op) {
+                    .set => |s| {
+                        try result.appendSlice(allocator, s.key);
+                        try result.appendSlice(allocator, ": ");
+                        try result.appendSlice(allocator, s.value);
+                        try result.appendSlice(allocator, "\n");
+                    },
+                    .delete => {},
+                }
+            }
+            try result.appendSlice(allocator, "---\n");
+            try result.appendSlice(allocator, content);
+        } else {
+            try result.appendSlice(allocator, content);
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// Convenience: set a single field.
+pub fn setField(allocator: std.mem.Allocator, content: []const u8, key: []const u8, value: []const u8) std.mem.Allocator.Error![]const u8 {
+    return editFields(allocator, content, &.{.{ .set = .{ .key = key, .value = value } }});
+}
+
+/// Convenience: delete a single field.
+pub fn deleteField(allocator: std.mem.Allocator, content: []const u8, key: []const u8) std.mem.Allocator.Error![]const u8 {
+    return editFields(allocator, content, &.{.{ .delete = key }});
+}
+
+/// Check if a line starts with "key:" (with optional whitespace after colon).
+fn matchesKey(line: []const u8, key: []const u8) bool {
+    if (line.len < key.len + 1) return false;
+    if (!std.mem.eql(u8, line[0..key.len], key)) return false;
+    return line[key.len] == ':';
+}
+
 test "no frontmatter" {
     const result = extract("# Hello\nWorld\n");
     try std.testing.expectEqual(null, result);
@@ -130,4 +253,114 @@ test "delimiter at EOF" {
     const result = extract(input).?;
     try std.testing.expectEqualStrings("title: x\n", result.raw);
     try std.testing.expectEqualStrings("", result.body);
+}
+
+// setField tests
+
+test "setField: add to existing frontmatter" {
+    const input = "---\ntitle: Hello\n---\nBody\n";
+    const result = try setField(std.testing.allocator, input, "draft", "true");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\ndraft: true\n---\nBody\n", result);
+}
+
+test "setField: replace existing key" {
+    const input = "---\ntitle: Old\ntags: [a]\n---\nBody\n";
+    const result = try setField(std.testing.allocator, input, "title", "New");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: New\ntags: [a]\n---\nBody\n", result);
+}
+
+test "setField: create frontmatter when none exists" {
+    const input = "# Body\n";
+    const result = try setField(std.testing.allocator, input, "title", "Hello");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\n---\n# Body\n", result);
+}
+
+test "setField: create frontmatter on empty file" {
+    const result = try setField(std.testing.allocator, "", "key", "val");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\nkey: val\n---\n", result);
+}
+
+// deleteField tests
+
+test "deleteField: remove existing key" {
+    const input = "---\ntitle: Hello\ndraft: true\n---\nBody\n";
+    const result = try deleteField(std.testing.allocator, input, "draft");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\n---\nBody\n", result);
+}
+
+test "deleteField: key not found leaves file unchanged" {
+    const input = "---\ntitle: Hello\n---\nBody\n";
+    const result = try deleteField(std.testing.allocator, input, "nonexistent");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(input, result);
+}
+
+test "deleteField: remove last key leaves empty frontmatter" {
+    const input = "---\ntitle: Hello\n---\nBody\n";
+    const result = try deleteField(std.testing.allocator, input, "title");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\n---\nBody\n", result);
+}
+
+test "deleteField: no frontmatter returns unchanged" {
+    const input = "# Body\n";
+    const result = try deleteField(std.testing.allocator, input, "title");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(input, result);
+}
+
+// editFields tests
+
+test "editFields: set multiple fields at once" {
+    const input = "---\ntitle: Hello\n---\nBody\n";
+    const result = try editFields(std.testing.allocator, input, &.{
+        .{ .set = .{ .key = "draft", .value = "true" } },
+        .{ .set = .{ .key = "author", .value = "me" } },
+    });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\ndraft: true\nauthor: me\n---\nBody\n", result);
+}
+
+test "editFields: delete multiple fields at once" {
+    const input = "---\ntitle: Hello\ndraft: true\nauthor: me\n---\nBody\n";
+    const result = try editFields(std.testing.allocator, input, &.{
+        .{ .delete = "draft" },
+        .{ .delete = "author" },
+    });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\n---\nBody\n", result);
+}
+
+test "editFields: mix set and delete" {
+    const input = "---\ntitle: Old\ndraft: true\n---\nBody\n";
+    const result = try editFields(std.testing.allocator, input, &.{
+        .{ .set = .{ .key = "title", .value = "New" } },
+        .{ .delete = "draft" },
+        .{ .set = .{ .key = "status", .value = "published" } },
+    });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: New\nstatus: published\n---\nBody\n", result);
+}
+
+test "editFields: set multiple on empty file" {
+    const result = try editFields(std.testing.allocator, "", &.{
+        .{ .set = .{ .key = "title", .value = "Hello" } },
+        .{ .set = .{ .key = "draft", .value = "true" } },
+    });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\ndraft: true\n---\n", result);
+}
+
+test "editFields: delete only on no frontmatter is noop" {
+    const input = "# Body\n";
+    const result = try editFields(std.testing.allocator, input, &.{
+        .{ .delete = "title" },
+    });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(input, result);
 }

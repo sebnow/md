@@ -24,28 +24,70 @@ const usage =
 
 const max_file_size = 64 * 1024 * 1024; // 64 MiB
 
-pub fn main() !void {
+const Output = struct {
+    stdout: std.fs.File.Writer,
+    stderr: std.fs.File.Writer,
+    stdout_buf: [8192]u8 = undefined,
+    stderr_buf: [1024]u8 = undefined,
+
+    fn init() Output {
+        var o: Output = .{
+            .stdout = undefined,
+            .stderr = undefined,
+        };
+        o.stdout = std.fs.File.stdout().writer(&o.stdout_buf);
+        o.stderr = std.fs.File.stderr().writer(&o.stderr_buf);
+        return o;
+    }
+
+    fn write(self: *Output, bytes: []const u8) !void {
+        self.stdout.interface.writeAll(bytes) catch |err| {
+            if (err == error.WriteFailed) {
+                if (self.stdout.err) |e| {
+                    if (e == error.BrokenPipe) std.process.exit(0);
+                    return error.WriteFailed;
+                }
+            }
+            return err;
+        };
+    }
+
+    fn writeErr(self: *Output, bytes: []const u8) void {
+        self.stderr.interface.writeAll(bytes) catch {};
+    }
+
+    fn flush(self: *Output) void {
+        self.stdout.interface.flush() catch {};
+        self.stderr.interface.flush() catch {};
+    }
+};
+
+pub fn main() void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    run(arena) catch |err| {
-        printError(err);
+    var out = Output.init();
+    defer out.flush();
+
+    run(arena, &out) catch |err| {
+        printError(&out, err);
+        out.flush();
         std.process.exit(1);
     };
 }
 
-fn run(arena: std.mem.Allocator) !void {
+fn run(arena: std.mem.Allocator, out: *Output) !void {
     var arg_iter = std.process.args();
     _ = arg_iter.skip(); // program name
 
     const command = arg_iter.next() orelse {
-        try writeAll(stdErr(), usage);
+        out.writeErr(usage);
         return error.MissingCommand;
     };
 
     if (std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
-        try writeAll(stdOut(), usage);
+        try out.write(usage);
         return;
     }
 
@@ -62,13 +104,13 @@ fn run(arena: std.mem.Allocator) !void {
 
     inline for (handlers) |entry| {
         if (std.mem.eql(u8, command, entry[0])) {
-            return entry[1](arena, &arg_iter);
+            return entry[1](arena, &arg_iter, out);
         }
     }
 
-    try writeAll(stdErr(), "md: unknown command '");
-    try writeAll(stdErr(), command);
-    try writeAll(stdErr(), "'\n");
+    out.writeErr("md: unknown command '");
+    out.writeErr(command);
+    out.writeErr("'\n");
     return error.UnknownCommand;
 }
 
@@ -122,73 +164,170 @@ fn readInputWithFile(arena: std.mem.Allocator, args: Args) ![]const u8 {
     return error.MissingFile;
 }
 
-fn cmdBody(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
+fn cmdBody(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
     const args = parseArgs(iter);
     const content = try readInput(arena, args);
 
     if (md.frontmatter.extract(content)) |fm| {
-        try writeAll(stdOut(), fm.body);
+        try out.write(fm.body);
     } else {
-        try writeAll(stdOut(), content);
+        try out.write(content);
     }
 }
 
-fn cmdFrontmatter(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
-    const args = parseArgs(iter);
-    const content = try readInput(arena, args);
-
-    if (md.frontmatter.extract(content)) |fm| {
-        if (args.json) {
-            try writeAll(stdOut(), fm.raw);
-        } else {
-            try writeAll(stdOut(), fm.raw);
+fn cmdFrontmatter(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
+    // Peek at next arg to check for sub-subcommands (set, delete)
+    const first_arg = iter.next();
+    if (first_arg) |sub| {
+        if (std.mem.eql(u8, sub, "set")) {
+            return cmdFrontmatterSet(arena, iter, out);
+        }
+        if (std.mem.eql(u8, sub, "delete")) {
+            return cmdFrontmatterDelete(arena, iter, out);
         }
     }
-    // No frontmatter — output nothing
+
+    // Regular frontmatter output — re-parse args with first_arg as potential file/flag
+    var args: Args = .{};
+    if (first_arg) |a| {
+        if (std.mem.eql(u8, a, "--json")) {
+            args.json = true;
+        } else if (a.len > 0 and a[0] != '-') {
+            args.positional = a;
+        }
+    }
+    const more = parseArgs(iter);
+    if (more.json) args.json = true;
+    if (args.positional == null) args.positional = more.positional;
+    if (args.file == null) args.file = more.file;
+
+    const content = try readInput(arena, args);
+
+    if (md.frontmatter.extract(content)) |fm| {
+        try out.write(fm.raw);
+    }
 }
 
-fn cmdHeadings(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
+fn cmdFrontmatterSet(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
+    var in_place = false;
+    var file_path: ?[]const u8 = null;
+    var ops: std.ArrayListUnmanaged(md.frontmatter.FieldOp) = .empty;
+
+    while (iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-i")) {
+            in_place = true;
+        } else if (arg.len > 0 and arg[0] == '-') {
+            continue;
+        } else if (file_path == null) {
+            file_path = arg;
+        } else {
+            // key-value pair: this arg is the key, next is the value
+            const value = iter.next() orelse {
+                return error.MissingArgument;
+            };
+            try ops.append(arena, .{ .set = .{ .key = arg, .value = value } });
+        }
+    }
+
+    const path = file_path orelse return error.MissingArgument;
+    if (ops.items.len == 0) return error.MissingArgument;
+
+    const content = blk: {
+        const file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+        break :blk try file.readToEndAlloc(arena, max_file_size);
+    };
+
+    const result = try md.frontmatter.editFields(arena, content, ops.items);
+
+    if (in_place) {
+        const out_file = try std.fs.cwd().createFile(path, .{});
+        defer out_file.close();
+        try out_file.writeAll(result);
+    } else {
+        try out.write(result);
+    }
+}
+
+fn cmdFrontmatterDelete(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
+    var in_place = false;
+    var file_path: ?[]const u8 = null;
+    var ops: std.ArrayListUnmanaged(md.frontmatter.FieldOp) = .empty;
+
+    while (iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-i")) {
+            in_place = true;
+        } else if (arg.len > 0 and arg[0] == '-') {
+            continue;
+        } else if (file_path == null) {
+            file_path = arg;
+        } else {
+            try ops.append(arena, .{ .delete = arg });
+        }
+    }
+
+    const path = file_path orelse return error.MissingArgument;
+    if (ops.items.len == 0) return error.MissingArgument;
+
+    const content = blk: {
+        const file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+        break :blk try file.readToEndAlloc(arena, max_file_size);
+    };
+
+    const result = try md.frontmatter.editFields(arena, content, ops.items);
+
+    if (in_place) {
+        const out_file = try std.fs.cwd().createFile(path, .{});
+        defer out_file.close();
+        try out_file.writeAll(result);
+    } else {
+        try out.write(result);
+    }
+}
+
+fn cmdHeadings(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
     const args = parseArgs(iter);
     const content = try readInput(arena, args);
     const parsed_headings = try md.headings.parse(arena, content);
 
     if (args.json) {
-        try writeJsonHeadings(parsed_headings);
+        try writeJsonHeadings(out, parsed_headings);
     } else {
         for (parsed_headings) |h| {
             var line_buf: [32]u8 = undefined;
             const line_str = std.fmt.bufPrint(&line_buf, "{d}", .{h.line}) catch unreachable;
-            try writeAll(stdOut(), line_str);
-            try writeAll(stdOut(), ":");
+            try out.write(line_str);
+            try out.write(":");
             var depth_idx: u3 = 0;
             while (depth_idx < h.depth) : (depth_idx += 1) {
-                try writeAll(stdOut(), "#");
+                try out.write("#");
             }
-            try writeAll(stdOut(), " ");
-            try writeAll(stdOut(), h.text);
-            try writeAll(stdOut(), "\n");
+            try out.write(" ");
+            try out.write(h.text);
+            try out.write("\n");
         }
     }
 }
 
-fn cmdLinks(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
+fn cmdLinks(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
     const args = parseArgs(iter);
 
     if (args.incoming) {
-        return cmdLinksIncoming(arena, args);
+        return cmdLinksIncoming(arena, args, out);
     }
 
     const content = try readInput(arena, args);
     const parsed_links = try md.links.parse(arena, content);
 
     if (args.json) {
-        try writeJsonLinks(parsed_links);
+        try writeJsonLinks(out, parsed_links);
     } else {
         for (parsed_links) |l| {
-            try writeAll(stdOut(), @tagName(l.kind));
-            try writeAll(stdOut(), "\t");
-            try writeAll(stdOut(), l.target);
-            try writeAll(stdOut(), "\n");
+            try out.write(@tagName(l.kind));
+            try out.write("\t");
+            try out.write(l.target);
+            try out.write("\n");
         }
     }
 }
@@ -198,25 +337,22 @@ const IncomingLink = struct {
     link: md.links.Link,
 };
 
-fn cmdLinksIncoming(arena: std.mem.Allocator, args: Args) !void {
+fn cmdLinksIncoming(arena: std.mem.Allocator, args: Args, out: *Output) !void {
     const target_path = args.positional orelse {
-        try writeAll(stdErr(), "md links --incoming: missing file argument\n");
         return error.MissingArgument;
     };
 
-    // Resolve target to canonical form for comparison
     const target_basename = std.fs.path.stem(target_path);
     const target_dir = std.fs.path.dirname(target_path);
-
     const scan_dir_path = args.dir orelse target_dir orelse ".";
 
     var incoming: std.ArrayListUnmanaged(IncomingLink) = .empty;
 
     var dir = std.fs.cwd().openDir(scan_dir_path, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound) {
-            try writeAll(stdErr(), "md: directory not found: ");
-            try writeAll(stdErr(), scan_dir_path);
-            try writeAll(stdErr(), "\n");
+            out.writeErr("md: directory not found: ");
+            out.writeErr(scan_dir_path);
+            out.writeErr("\n");
         }
         return err;
     };
@@ -225,28 +361,28 @@ fn cmdLinksIncoming(arena: std.mem.Allocator, args: Args) !void {
     try scanDirForLinks(arena, dir, scan_dir_path, target_path, target_basename, &incoming);
 
     if (args.json) {
-        try writeAll(stdOut(), "[");
+        try out.write("[");
         for (incoming.items, 0..) |item, idx| {
-            if (idx > 0) try writeAll(stdOut(), ",");
-            try writeAll(stdOut(), "{\"source\":\"");
-            try writeJsonEscaped(stdOut(), item.source_path);
-            try writeAll(stdOut(), "\",\"kind\":\"");
-            try writeAll(stdOut(), @tagName(item.link.kind));
-            try writeAll(stdOut(), "\",\"line\":");
+            if (idx > 0) try out.write(",");
+            try out.write("{\"source\":\"");
+            try writeJsonEscaped(out, item.source_path);
+            try out.write("\",\"kind\":\"");
+            try out.write(@tagName(item.link.kind));
+            try out.write("\",\"line\":");
             var buf: [32]u8 = undefined;
-            try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{item.link.line}) catch unreachable);
-            try writeAll(stdOut(), "}");
+            try out.write(std.fmt.bufPrint(&buf, "{d}", .{item.link.line}) catch unreachable);
+            try out.write("}");
         }
-        try writeAll(stdOut(), "]\n");
+        try out.write("]\n");
     } else {
         for (incoming.items) |item| {
-            try writeAll(stdOut(), item.source_path);
-            try writeAll(stdOut(), "\t");
-            try writeAll(stdOut(), @tagName(item.link.kind));
+            try out.write(item.source_path);
+            try out.write("\t");
+            try out.write(@tagName(item.link.kind));
             var buf: [32]u8 = undefined;
-            try writeAll(stdOut(), "\t");
-            try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{item.link.line}) catch unreachable);
-            try writeAll(stdOut(), "\n");
+            try out.write("\t");
+            try out.write(std.fmt.bufPrint(&buf, "{d}", .{item.link.line}) catch unreachable);
+            try out.write("\n");
         }
     }
 }
@@ -268,7 +404,6 @@ fn scanDirForLinks(
 
         const source_path = try std.fs.path.join(arena, &.{ dir_path, entry.path });
 
-        // Don't scan the target file itself
         if (std.mem.eql(u8, source_path, target_path)) continue;
 
         const file = dir.openFile(entry.path, .{}) catch continue;
@@ -295,9 +430,7 @@ fn linkMatchesTarget(
 ) bool {
     const link_target = link.target;
 
-    // Wikilinks match by basename (without extension)
     if (link.kind == .wikilink or link.kind == .embed) {
-        // Strip anchor (#section) from wikilink target
         const name = if (std.mem.indexOfScalar(u8, link_target, '#')) |hash_pos|
             link_target[0..hash_pos]
         else
@@ -305,7 +438,6 @@ fn linkMatchesTarget(
         return std.mem.eql(u8, name, target_basename);
     }
 
-    // Standard/image links: resolve relative to the source file's directory
     const source_dir = std.fs.path.dirname(source_path) orelse ".";
     const resolved = std.fs.path.resolve(
         std.heap.page_allocator,
@@ -321,56 +453,52 @@ fn linkMatchesTarget(
 }
 
 fn isMarkdownFile(name: []const u8) bool {
-    const lower_ext = blk: {
-        if (std.mem.endsWith(u8, name, ".md")) break :blk true;
-        if (std.mem.endsWith(u8, name, ".MD")) break :blk true;
-        if (std.mem.endsWith(u8, name, ".markdown")) break :blk true;
-        if (std.mem.endsWith(u8, name, ".Markdown")) break :blk true;
-        if (std.mem.endsWith(u8, name, ".MARKDOWN")) break :blk true;
-        break :blk false;
-    };
-    return lower_ext;
+    return std.mem.endsWith(u8, name, ".md") or
+        std.mem.endsWith(u8, name, ".MD") or
+        std.mem.endsWith(u8, name, ".markdown") or
+        std.mem.endsWith(u8, name, ".Markdown") or
+        std.mem.endsWith(u8, name, ".MARKDOWN");
 }
 
-fn cmdTags(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
+fn cmdTags(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
     const args = parseArgs(iter);
     const content = try readInput(arena, args);
     const parsed_tags = try md.tags.parse(arena, content);
 
     if (args.json) {
-        try writeJsonTags(parsed_tags);
+        try writeJsonTags(out, parsed_tags);
     } else {
         for (parsed_tags) |t| {
-            try writeAll(stdOut(), t.name);
-            try writeAll(stdOut(), "\n");
+            try out.write(t.name);
+            try out.write("\n");
         }
     }
 }
 
-fn cmdCodeblocks(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
+fn cmdCodeblocks(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
     const args = parseArgs(iter);
     const content = try readInput(arena, args);
     const parsed_blocks = try md.codeblocks.parse(arena, content);
 
     if (args.json) {
-        try writeJsonCodeblocks(parsed_blocks);
+        try writeJsonCodeblocks(out, parsed_blocks);
     } else {
         for (parsed_blocks) |b| {
             var line_buf: [64]u8 = undefined;
             const range = std.fmt.bufPrint(&line_buf, "{d}-{d}", .{ b.start_line, b.end_line }) catch unreachable;
-            try writeAll(stdOut(), range);
-            try writeAll(stdOut(), "\t");
+            try out.write(range);
+            try out.write("\t");
             if (b.language.len > 0) {
-                try writeAll(stdOut(), b.language);
+                try out.write(b.language);
             } else {
-                try writeAll(stdOut(), "(none)");
+                try out.write("(none)");
             }
-            try writeAll(stdOut(), "\n");
+            try out.write("\n");
         }
     }
 }
 
-fn cmdStats(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
+fn cmdStats(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
     const args = parseArgs(iter);
     const content = try readInput(arena, args);
 
@@ -388,41 +516,35 @@ fn cmdStats(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
             in_word = true;
         }
     }
-    // Count final line if file doesn't end with newline
     if (body.len > 0 and body[body.len - 1] != '\n') lines += 1;
 
     if (args.json) {
-        try writeAll(stdOut(), "{\"lines\":");
+        try out.write("{\"lines\":");
         var buf: [32]u8 = undefined;
-        try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{lines}) catch unreachable);
-        try writeAll(stdOut(), ",\"words\":");
-        try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{words}) catch unreachable);
-        try writeAll(stdOut(), "}\n");
+        try out.write(std.fmt.bufPrint(&buf, "{d}", .{lines}) catch unreachable);
+        try out.write(",\"words\":");
+        try out.write(std.fmt.bufPrint(&buf, "{d}", .{words}) catch unreachable);
+        try out.write("}\n");
     } else {
         var buf: [32]u8 = undefined;
-        try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{lines}) catch unreachable);
-        try writeAll(stdOut(), " lines\n");
-        try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{words}) catch unreachable);
-        try writeAll(stdOut(), " words\n");
+        try out.write(std.fmt.bufPrint(&buf, "{d}", .{lines}) catch unreachable);
+        try out.write(" lines\n");
+        try out.write(std.fmt.bufPrint(&buf, "{d}", .{words}) catch unreachable);
+        try out.write(" words\n");
     }
 }
 
-fn cmdSection(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
+fn cmdSection(arena: std.mem.Allocator, iter: *std.process.ArgIterator, out: *Output) !void {
     const args = parseArgs(iter);
-    // For section, the first positional is the heading pattern, second is file
     const heading_pattern = args.positional orelse {
-        try writeAll(stdErr(), "md section: missing heading argument\n");
         return error.MissingArgument;
     };
-    // Re-read input using file (not positional)
     const content = try readInputWithFile(arena, args);
     const parsed_headings = try md.headings.parse(arena, content);
 
-    // Find matching heading
     for (parsed_headings, 0..) |h, idx| {
         if (!matchesHeading(h, heading_pattern)) continue;
 
-        // Find the end: next heading of same or lesser depth
         var end_pos = content.len;
         for (parsed_headings[idx + 1 ..]) |next_h| {
             if (next_h.depth <= h.depth) {
@@ -431,20 +553,17 @@ fn cmdSection(arena: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
             }
         }
 
-        // Find start of content (line after the heading)
         const start_pos = lineStartPos(content, h.line + 1);
         if (start_pos <= end_pos) {
-            try writeAll(stdOut(), content[start_pos..end_pos]);
+            try out.write(content[start_pos..end_pos]);
         }
         break;
     }
 }
 
 fn matchesHeading(h: md.headings.Heading, pattern: []const u8) bool {
-    // Pattern can be "## Heading" or just "Heading"
     var p = pattern;
 
-    // Strip leading #'s and whitespace
     var expected_depth: ?u3 = null;
     if (p.len > 0 and p[0] == '#') {
         var depth: u3 = 0;
@@ -476,104 +595,89 @@ fn lineStartPos(content: []const u8, target_line: usize) usize {
 
 // JSON output helpers
 
-fn writeJsonHeadings(parsed_headings: []const md.headings.Heading) !void {
-    try writeAll(stdOut(), "[");
+fn writeJsonHeadings(out: *Output, parsed_headings: []const md.headings.Heading) !void {
+    try out.write("[");
     for (parsed_headings, 0..) |h, idx| {
-        if (idx > 0) try writeAll(stdOut(), ",");
-        try writeAll(stdOut(), "{\"depth\":");
+        if (idx > 0) try out.write(",");
+        try out.write("{\"depth\":");
         var buf: [32]u8 = undefined;
-        try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{h.depth}) catch unreachable);
-        try writeAll(stdOut(), ",\"text\":\"");
-        try writeJsonEscaped(stdOut(), h.text);
-        try writeAll(stdOut(), "\",\"line\":");
-        try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{h.line}) catch unreachable);
-        try writeAll(stdOut(), "}");
+        try out.write(std.fmt.bufPrint(&buf, "{d}", .{h.depth}) catch unreachable);
+        try out.write(",\"text\":\"");
+        try writeJsonEscaped(out, h.text);
+        try out.write("\",\"line\":");
+        try out.write(std.fmt.bufPrint(&buf, "{d}", .{h.line}) catch unreachable);
+        try out.write("}");
     }
-    try writeAll(stdOut(), "]\n");
+    try out.write("]\n");
 }
 
-fn writeJsonLinks(parsed_links: []const md.links.Link) !void {
-    try writeAll(stdOut(), "[");
+fn writeJsonLinks(out: *Output, parsed_links: []const md.links.Link) !void {
+    try out.write("[");
     for (parsed_links, 0..) |l, idx| {
-        if (idx > 0) try writeAll(stdOut(), ",");
-        try writeAll(stdOut(), "{\"kind\":\"");
-        try writeAll(stdOut(), @tagName(l.kind));
-        try writeAll(stdOut(), "\",\"target\":\"");
-        try writeJsonEscaped(stdOut(), l.target);
-        try writeAll(stdOut(), "\",\"text\":\"");
-        try writeJsonEscaped(stdOut(), l.text);
-        try writeAll(stdOut(), "\",\"line\":");
+        if (idx > 0) try out.write(",");
+        try out.write("{\"kind\":\"");
+        try out.write(@tagName(l.kind));
+        try out.write("\",\"target\":\"");
+        try writeJsonEscaped(out, l.target);
+        try out.write("\",\"text\":\"");
+        try writeJsonEscaped(out, l.text);
+        try out.write("\",\"line\":");
         var buf: [32]u8 = undefined;
-        try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{l.line}) catch unreachable);
-        try writeAll(stdOut(), "}");
+        try out.write(std.fmt.bufPrint(&buf, "{d}", .{l.line}) catch unreachable);
+        try out.write("}");
     }
-    try writeAll(stdOut(), "]\n");
+    try out.write("]\n");
 }
 
-fn writeJsonTags(parsed_tags: []const md.tags.Tag) !void {
-    try writeAll(stdOut(), "[");
+fn writeJsonTags(out: *Output, parsed_tags: []const md.tags.Tag) !void {
+    try out.write("[");
     for (parsed_tags, 0..) |t, idx| {
-        if (idx > 0) try writeAll(stdOut(), ",");
-        try writeAll(stdOut(), "\"");
-        try writeJsonEscaped(stdOut(), t.name);
-        try writeAll(stdOut(), "\"");
+        if (idx > 0) try out.write(",");
+        try out.write("\"");
+        try writeJsonEscaped(out, t.name);
+        try out.write("\"");
     }
-    try writeAll(stdOut(), "]\n");
+    try out.write("]\n");
 }
 
-fn writeJsonCodeblocks(parsed_blocks: []const md.codeblocks.CodeBlock) !void {
-    try writeAll(stdOut(), "[");
+fn writeJsonCodeblocks(out: *Output, parsed_blocks: []const md.codeblocks.CodeBlock) !void {
+    try out.write("[");
     for (parsed_blocks, 0..) |b, idx| {
-        if (idx > 0) try writeAll(stdOut(), ",");
-        try writeAll(stdOut(), "{\"language\":\"");
-        try writeJsonEscaped(stdOut(), b.language);
-        try writeAll(stdOut(), "\",\"start_line\":");
+        if (idx > 0) try out.write(",");
+        try out.write("{\"language\":\"");
+        try writeJsonEscaped(out, b.language);
+        try out.write("\",\"start_line\":");
         var buf: [32]u8 = undefined;
-        try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{b.start_line}) catch unreachable);
-        try writeAll(stdOut(), ",\"end_line\":");
-        try writeAll(stdOut(), std.fmt.bufPrint(&buf, "{d}", .{b.end_line}) catch unreachable);
-        try writeAll(stdOut(), "}");
+        try out.write(std.fmt.bufPrint(&buf, "{d}", .{b.start_line}) catch unreachable);
+        try out.write(",\"end_line\":");
+        try out.write(std.fmt.bufPrint(&buf, "{d}", .{b.end_line}) catch unreachable);
+        try out.write("}");
     }
-    try writeAll(stdOut(), "]\n");
+    try out.write("]\n");
 }
 
-fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
+fn writeJsonEscaped(out: *Output, s: []const u8) !void {
     for (s) |c| {
         switch (c) {
-            '"' => try writeAll(out, "\\\""),
-            '\\' => try writeAll(out, "\\\\"),
-            '\n' => try writeAll(out, "\\n"),
-            '\r' => try writeAll(out, "\\r"),
-            '\t' => try writeAll(out, "\\t"),
+            '"' => try out.write("\\\""),
+            '\\' => try out.write("\\\\"),
+            '\n' => try out.write("\\n"),
+            '\r' => try out.write("\\r"),
+            '\t' => try out.write("\\t"),
             else => {
                 if (c < 0x20) {
                     var buf: [6]u8 = undefined;
                     _ = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{c}) catch unreachable;
-                    try writeAll(out, &buf);
+                    try out.write(&buf);
                 } else {
-                    try writeAll(out, &.{c});
+                    try out.write(&.{c});
                 }
             },
         }
     }
 }
 
-fn stdOut() std.fs.File {
-    return std.fs.File.stdout();
-}
-
-fn stdErr() std.fs.File {
-    return std.fs.File.stderr();
-}
-
-fn writeAll(file: std.fs.File, bytes: []const u8) !void {
-    file.writeAll(bytes) catch |err| {
-        if (err == error.BrokenPipe) std.process.exit(0);
-        return err;
-    };
-}
-
-fn printError(err: anyerror) void {
+fn printError(out: *Output, err: anyerror) void {
     const msg: []const u8 = switch (err) {
         error.FileNotFound => "file not found",
         error.AccessDenied => "access denied",
@@ -583,7 +687,7 @@ fn printError(err: anyerror) void {
         error.MissingFile => "missing file argument",
         else => @errorName(err),
     };
-    std.fs.File.stderr().writeAll("md: ") catch {};
-    std.fs.File.stderr().writeAll(msg) catch {};
-    std.fs.File.stderr().writeAll("\n") catch {};
+    out.writeErr("md: ");
+    out.writeErr(msg);
+    out.writeErr("\n");
 }

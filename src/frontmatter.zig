@@ -186,8 +186,8 @@ fn matchesKey(line: []const u8, key: []const u8) bool {
 
 /// Convert raw YAML frontmatter to JSON.
 /// Handles top-level key: value pairs with best-effort type detection.
-/// Recognizes booleans, integers, floats, null, inline lists, and strings.
-/// Continuation lines (indented) are skipped.
+/// Recognizes booleans, integers, floats, null, inline lists, block
+/// sequences, and simple nested mappings.
 pub fn toJson(allocator: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]const u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     try out.append(allocator, '{');
@@ -198,7 +198,6 @@ pub fn toJson(allocator: std.mem.Allocator, raw: []const u8) std.mem.Allocator.E
         const line_start = pos;
         pos = nextLine(raw, pos);
 
-        // Skip blank lines and continuation lines (indented)
         if (line_start == pos) break;
         const line = stripLineEnding(raw[line_start..pos]);
         if (line.len == 0) continue;
@@ -209,9 +208,8 @@ pub fn toJson(allocator: std.mem.Allocator, raw: []const u8) std.mem.Allocator.E
         const key = line[0..colon];
         if (key.len == 0) continue;
 
-        // Value is everything after ": " (or empty if just "key:")
+        // Value is everything after ":"
         var value = line[colon + 1 ..];
-        // Strip leading whitespace from value
         while (value.len > 0 and (value[0] == ' ' or value[0] == '\t')) {
             value = value[1..];
         }
@@ -225,13 +223,143 @@ pub fn toJson(allocator: std.mem.Allocator, raw: []const u8) std.mem.Allocator.E
         try out.append(allocator, '"');
         try out.append(allocator, ':');
 
-        // Write value with type detection
-        try appendJsonValue(&out, allocator, value);
+        // Empty value: check continuation lines for block sequence or nested mapping
+        if (value.len == 0) {
+            pos = try appendBlockValue(&out, allocator, raw, pos);
+        } else {
+            try appendJsonValue(&out, allocator, value);
+        }
     }
 
     try out.append(allocator, '}');
     try out.append(allocator, '\n');
     return out.toOwnedSlice(allocator);
+}
+
+/// Parse indented continuation lines as either a block sequence or nested mapping.
+/// Returns the new position after consuming continuation lines.
+fn appendBlockValue(
+    out: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    start_pos: usize,
+) std.mem.Allocator.Error!usize {
+    // Peek at first continuation line to determine type
+    if (start_pos < raw.len) {
+        const peek_line = stripLineEnding(raw[start_pos..nextLine(raw, start_pos)]);
+        const trimmed = std.mem.trimLeft(u8, peek_line, " \t");
+
+        if (trimmed.len > 0 and trimmed[0] == '-') {
+            return appendBlockSequence(out, allocator, raw, start_pos);
+        } else if (trimmed.len > 0 and (peek_line[0] == ' ' or peek_line[0] == '\t')) {
+            return appendNestedMapping(out, allocator, raw, start_pos);
+        }
+    }
+
+    // No continuation lines — null
+    try out.appendSlice(allocator, "null");
+    return start_pos;
+}
+
+/// Consume indented `- item` lines and emit a JSON array.
+fn appendBlockSequence(
+    out: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    start_pos: usize,
+) std.mem.Allocator.Error!usize {
+    try out.append(allocator, '[');
+    var pos = start_pos;
+    var arr_first = true;
+
+    while (pos < raw.len) {
+        const line_start = pos;
+        const next_pos = nextLine(raw, pos);
+        const line = stripLineEnding(raw[line_start..next_pos]);
+
+        // Stop at non-indented lines
+        if (line.len == 0) break;
+        if (line[0] != ' ' and line[0] != '\t') break;
+
+        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        if (trimmed.len == 0) {
+            pos = next_pos;
+            continue;
+        }
+
+        // Must be a "- item" line
+        if (trimmed[0] != '-') break;
+
+        pos = next_pos;
+
+        // Extract item value after "- "
+        var item = trimmed[1..];
+        while (item.len > 0 and (item[0] == ' ' or item[0] == '\t')) {
+            item = item[1..];
+        }
+        item = stripYamlQuotes(item);
+
+        if (!arr_first) try out.append(allocator, ',');
+        arr_first = false;
+
+        try out.append(allocator, '"');
+        try appendJsonEscaped(out, allocator, item);
+        try out.append(allocator, '"');
+    }
+
+    try out.append(allocator, ']');
+    return pos;
+}
+
+/// Consume indented `key: value` lines and emit a JSON object.
+fn appendNestedMapping(
+    out: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    start_pos: usize,
+) std.mem.Allocator.Error!usize {
+    try out.append(allocator, '{');
+    var pos = start_pos;
+    var obj_first = true;
+
+    while (pos < raw.len) {
+        const line_start = pos;
+        const next_pos = nextLine(raw, pos);
+        const line = stripLineEnding(raw[line_start..next_pos]);
+
+        if (line.len == 0) break;
+        if (line[0] != ' ' and line[0] != '\t') break;
+
+        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        if (trimmed.len == 0) {
+            pos = next_pos;
+            continue;
+        }
+
+        pos = next_pos;
+
+        // Parse as key: value
+        const nested_colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse continue;
+        const nested_key = trimmed[0..nested_colon];
+        if (nested_key.len == 0) continue;
+
+        var nested_value = trimmed[nested_colon + 1 ..];
+        while (nested_value.len > 0 and (nested_value[0] == ' ' or nested_value[0] == '\t')) {
+            nested_value = nested_value[1..];
+        }
+
+        if (!obj_first) try out.append(allocator, ',');
+        obj_first = false;
+
+        try out.append(allocator, '"');
+        try appendJsonEscaped(out, allocator, nested_key);
+        try out.append(allocator, '"');
+        try out.append(allocator, ':');
+        try appendJsonValue(out, allocator, nested_value);
+    }
+
+    try out.append(allocator, '}');
+    return pos;
 }
 
 fn appendJsonValue(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: []const u8) std.mem.Allocator.Error!void {
@@ -589,8 +717,44 @@ test "toJson: quoted YAML strings unquoted in output" {
 }
 
 test "toJson: null values" {
-    const raw = "empty:\nnull_val: null\ntilde: ~\n";
+    const raw = "null_val: null\ntilde: ~\n";
     const result = try toJson(std.testing.allocator, raw);
     defer std.testing.allocator.free(result);
-    try std.testing.expectEqualStrings("{\"empty\":null,\"null_val\":null,\"tilde\":null}\n", result);
+    try std.testing.expectEqualStrings("{\"null_val\":null,\"tilde\":null}\n", result);
+}
+
+test "toJson: block sequence list" {
+    const raw = "tags:\n  - alpha\n  - beta\n";
+    const result = try toJson(std.testing.allocator, raw);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("{\"tags\":[\"alpha\",\"beta\"]}\n", result);
+}
+
+test "toJson: block sequence followed by another key" {
+    const raw = "tags:\n  - alpha\n  - beta\ntitle: Hello\n";
+    const result = try toJson(std.testing.allocator, raw);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("{\"tags\":[\"alpha\",\"beta\"],\"title\":\"Hello\"}\n", result);
+}
+
+test "toJson: block sequence single item" {
+    const raw = "tags:\n  - only\n";
+    const result = try toJson(std.testing.allocator, raw);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("{\"tags\":[\"only\"]}\n", result);
+}
+
+test "toJson: empty key with no continuation is null" {
+    const raw = "empty:\ntitle: Hello\n";
+    const result = try toJson(std.testing.allocator, raw);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("{\"empty\":null,\"title\":\"Hello\"}\n", result);
+}
+
+test "toJson: nested object skipped as raw string" {
+    const raw = "metadata:\n  author: me\n  year: 2025\ntitle: Hello\n";
+    const result = try toJson(std.testing.allocator, raw);
+    defer std.testing.allocator.free(result);
+    // Nested objects are best-effort: key-value continuation lines become a JSON object
+    try std.testing.expectEqualStrings("{\"metadata\":{\"author\":\"me\",\"year\":2025},\"title\":\"Hello\"}\n", result);
 }

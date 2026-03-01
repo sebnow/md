@@ -1,0 +1,4 @@
+CONTEXT.md
+zig-out/
+zig-cache/
+.zig-cache/

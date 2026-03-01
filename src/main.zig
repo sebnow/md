@@ -6,7 +6,7 @@ const usage =
     \\
     \\Commands:
     \\  body         Output document body without frontmatter
-    \\  frontmatter  Output frontmatter as JSON
+    \\  frontmatter  Output or edit YAML frontmatter
     \\  headings     List headings with depth and line numbers
     \\  links        List outgoing links
     \\  tags         List tags

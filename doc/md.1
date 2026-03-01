@@ -1,0 +1,156 @@
+.Dd March 1, 2026
+.Dt MD 1
+.Os
+.Sh NAME
+.Nm md
+.Nd extract and manipulate Markdown content
+.Sh SYNOPSIS
+.Nm
+.Ar command
+.Op Fl -json
+.Op Ar file
+.Sh DESCRIPTION
+.Nm
+is a command-line utility for working with Markdown files.
+It parses Markdown leniently, preferring best-effort results over strict errors.
+.Pp
+If no
+.Ar file
+is given,
+.Nm
+reads from standard input.
+.Pp
+Plain text output is the default.
+Use
+.Fl -json
+for structured output.
+.Sh COMMANDS
+.Bl -tag -width "frontmatter"
+.It Ic body Op Ar file
+Output the document body without frontmatter.
+.It Ic frontmatter Op Ar file
+Output raw YAML frontmatter.
+.It Ic frontmatter set Oo Fl i Oc Ar file Ar key Ar value Op Ar key Ar value ...
+Set one or more frontmatter fields.
+Multiple key-value pairs can be specified.
+If the key already exists, its value is replaced.
+If no frontmatter exists, one is created.
+.Pp
+Output goes to standard output by default.
+Use
+.Fl i
+to edit the file in-place.
+.It Ic frontmatter delete Oo Fl i Oc Ar file Ar key Op Ar key ...
+Delete one or more frontmatter fields.
+.Pp
+Output goes to standard output by default.
+Use
+.Fl i
+to edit the file in-place.
+.It Ic headings Oo Fl -json Oc Op Ar file
+List headings with their depth and line numbers.
+.It Ic links Oo Fl -json Oc Op Ar file
+List outgoing links.
+Supports standard Markdown links, Obsidian wikilinks, images, and embeds.
+.It Ic links Fl -incoming Oo Fl -json Oc Oo Fl -dir Ar directory Oc Ar file
+List incoming links to
+.Ar file
+by scanning other Markdown files.
+Wikilinks are matched by basename.
+Standard links are resolved relative to the source file.
+.Pp
+By default, scans the parent directory of
+.Ar file .
+Use
+.Fl -dir
+to specify a different directory.
+.It Ic tags Oo Fl -json Oc Op Ar file
+Extract inline
+.Li #tags
+with deduplication.
+.It Ic codeblocks Oo Fl -json Oc Op Ar file
+List code blocks with language and line ranges.
+Supports fenced blocks (backtick and tilde) and indented blocks
+(4+ spaces or tab).
+.It Ic stats Oo Fl -json Oc Op Ar file
+Show word count and line count.
+.It Ic section Ar heading Op Ar file
+Extract content under a specific heading.
+The
+.Ar heading
+can include depth markers
+.Pq e.g., Dq ## API
+or just the heading text.
+Content includes everything until the next heading of equal or lesser depth.
+.El
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl -json
+Output in JSON format.
+.It Fl -help
+Show usage information.
+.It Fl i
+.Pq Ic frontmatter set No and Ic frontmatter delete No only
+Edit the file in-place instead of writing to standard output.
+.It Fl -incoming
+.Pq Ic links No only
+Scan for incoming links instead of listing outgoing links.
+.It Fl -dir Ar directory
+.Pq Ic links --incoming No only
+Directory to scan for incoming links.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Extract the body of a Markdown file:
+.Dl md body notes.md
+.Pp
+List headings as JSON:
+.Dl md headings --json notes.md | jq '.[] | select(.depth == 2)'
+.Pp
+Set multiple frontmatter fields in-place:
+.Dl md frontmatter set -i notes.md title \(dqMy Note\(dq draft true
+.Pp
+Delete frontmatter fields:
+.Dl md frontmatter delete -i notes.md draft tags
+.Pp
+Find all files linking to a note:
+.Dl md links --incoming notes.md --dir ./vault/
+.Pp
+Extract a section by heading:
+.Dl md section \(dq## API\(dq notes.md
+.Pp
+Read from stdin:
+.Dl cat notes.md | md tags
+.Pp
+Process all Markdown files in a directory:
+.Dl find vault/ -name '*.md' | xargs -I{} md tags {}
+.Sh SUPPORTED FORMATS
+.Bl -bullet
+.It
+Standard Markdown links:
+.Li [text](url)
+.It
+Obsidian wikilinks:
+.Li [[target]] ,
+.Li [[target|alias]]
+.It
+Image and embed links:
+.Li ![alt](url) ,
+.Li ![[embed]]
+.It
+YAML frontmatter (delimited by
+.Li --- )
+.It
+ATX headings
+.Pq Li "# H1"
+through
+.Li "###### H6"
+.It
+Fenced code blocks (backtick and tilde)
+.It
+Indented code blocks (4+ spaces or tab)
+.It
+Inline tags
+.Pq Li #tag
+.El

@@ -23,6 +23,14 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // Install man page
+    b.installFile("doc/md.1", "share/man/man1/md.1");
+
+    // Install shell completions
+    b.installFile("completions/md.bash", "share/bash-completion/completions/md");
+    b.installFile("completions/md.zsh", "share/zsh/site-functions/_md");
+    b.installFile("completions/md.fish", "share/fish/vendor_completions.d/md.fish");
+
     const run_step = b.step("run", "Run md");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);

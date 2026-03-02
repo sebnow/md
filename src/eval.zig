@@ -98,11 +98,15 @@ pub const Evaluator = struct {
     }
 
     fn evalFnCall(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
-        // Extractors: operate on document content
-        if (fc.args.len == 0) {
-            if (input == null or self.isExtractor(fc.name)) {
-                return self.evalExtractor(fc.name);
+        // Extractors: operate on document content, or piped string input
+        if (fc.args.len == 0 and self.isExtractor(fc.name)) {
+            if (input) |inp| {
+                // When piped a string (e.g. from section()), parse that instead
+                if (inp == .string) {
+                    return self.evalExtractorOnContent(fc.name, inp.string);
+                }
             }
+            return self.evalExtractor(fc.name);
         }
 
         // select(predicate): filter arrays
@@ -199,15 +203,19 @@ pub const Evaluator = struct {
     }
 
     fn evalExtractor(self: *Evaluator, name: []const u8) ?Value {
-        if (std.mem.eql(u8, name, "frontmatter")) return self.extractFrontmatter();
-        if (std.mem.eql(u8, name, "body")) return self.extractBody();
-        if (std.mem.eql(u8, name, "headings")) return self.extractHeadings();
-        if (std.mem.eql(u8, name, "links")) return self.extractLinks();
-        if (std.mem.eql(u8, name, "tags")) return self.extractTags();
-        if (std.mem.eql(u8, name, "codeblocks")) return self.extractCodeblocks();
-        if (std.mem.eql(u8, name, "stats")) return self.extractStats();
-        if (std.mem.eql(u8, name, "comments")) return self.extractComments();
-        if (std.mem.eql(u8, name, "footnotes")) return self.extractFootnotes();
+        return self.evalExtractorOnContent(name, self.content);
+    }
+
+    fn evalExtractorOnContent(self: *Evaluator, name: []const u8, content: []const u8) ?Value {
+        if (std.mem.eql(u8, name, "frontmatter")) return self.extractFrontmatterFrom(content);
+        if (std.mem.eql(u8, name, "body")) return self.extractBodyFrom(content);
+        if (std.mem.eql(u8, name, "headings")) return self.extractHeadingsFrom(content);
+        if (std.mem.eql(u8, name, "links")) return self.extractLinksFrom(content);
+        if (std.mem.eql(u8, name, "tags")) return self.extractTagsFrom(content);
+        if (std.mem.eql(u8, name, "codeblocks")) return self.extractCodeblocksFrom(content);
+        if (std.mem.eql(u8, name, "stats")) return self.extractStatsFrom(content);
+        if (std.mem.eql(u8, name, "comments")) return self.extractCommentsFrom(content);
+        if (std.mem.eql(u8, name, "footnotes")) return self.extractFootnotesFrom(content);
         if (std.mem.eql(u8, name, "incoming")) return self.extractIncoming();
         return null;
     }
@@ -687,20 +695,20 @@ pub const Evaluator = struct {
         }
     }
 
-    fn extractFrontmatter(self: *Evaluator) ?Value {
-        const fm = md.frontmatter.extract(self.content) orelse return .null;
+    fn extractFrontmatterFrom(self: *Evaluator, content: []const u8) ?Value {
+        const fm = md.frontmatter.extract(content) orelse return .null;
         return parseFrontmatterToValue(self.arena, fm.raw);
     }
 
-    fn extractBody(self: *Evaluator) Value {
-        if (md.frontmatter.extract(self.content)) |fm| {
+    fn extractBodyFrom(_: *Evaluator, content: []const u8) Value {
+        if (md.frontmatter.extract(content)) |fm| {
             return .{ .string = fm.body };
         }
-        return .{ .string = self.content };
+        return .{ .string = content };
     }
 
-    fn extractHeadings(self: *Evaluator) ?Value {
-        const parsed = md.headings.parse(self.arena, self.content) catch return null;
+    fn extractHeadingsFrom(self: *Evaluator, content: []const u8) ?Value {
+        const parsed = md.headings.parse(self.arena, content) catch return null;
         const items = self.arena.alloc(Value, parsed.len) catch return null;
         for (parsed, 0..) |h, idx| {
             items[idx] = headingToValue(self.arena, h) catch return null;
@@ -708,8 +716,8 @@ pub const Evaluator = struct {
         return .{ .array = items };
     }
 
-    fn extractLinks(self: *Evaluator) ?Value {
-        const parsed = md.links.parse(self.arena, self.content) catch return null;
+    fn extractLinksFrom(self: *Evaluator, content: []const u8) ?Value {
+        const parsed = md.links.parse(self.arena, content) catch return null;
         const items = self.arena.alloc(Value, parsed.len) catch return null;
         for (parsed, 0..) |l, idx| {
             items[idx] = linkToValue(self.arena, l) catch return null;
@@ -717,8 +725,8 @@ pub const Evaluator = struct {
         return .{ .array = items };
     }
 
-    fn extractTags(self: *Evaluator) ?Value {
-        const parsed = md.tags.parse(self.arena, self.content) catch return null;
+    fn extractTagsFrom(self: *Evaluator, content: []const u8) ?Value {
+        const parsed = md.tags.parse(self.arena, content) catch return null;
         const items = self.arena.alloc(Value, parsed.len) catch return null;
         for (parsed, 0..) |t, idx| {
             items[idx] = tagToValue(self.arena, t) catch return null;
@@ -726,8 +734,8 @@ pub const Evaluator = struct {
         return .{ .array = items };
     }
 
-    fn extractCodeblocks(self: *Evaluator) ?Value {
-        const parsed = md.codeblocks.parse(self.arena, self.content) catch return null;
+    fn extractCodeblocksFrom(self: *Evaluator, content: []const u8) ?Value {
+        const parsed = md.codeblocks.parse(self.arena, content) catch return null;
         const items = self.arena.alloc(Value, parsed.len) catch return null;
         for (parsed, 0..) |b, idx| {
             items[idx] = codeblockToValue(self.arena, b) catch return null;
@@ -735,8 +743,8 @@ pub const Evaluator = struct {
         return .{ .array = items };
     }
 
-    fn extractStats(self: *Evaluator) ?Value {
-        const body = if (md.frontmatter.extract(self.content)) |fm| fm.body else self.content;
+    fn extractStatsFrom(self: *Evaluator, content: []const u8) ?Value {
+        const body = if (md.frontmatter.extract(content)) |fm| fm.body else content;
 
         var lines: usize = 0;
         var words: usize = 0;
@@ -758,8 +766,8 @@ pub const Evaluator = struct {
         });
     }
 
-    fn extractComments(self: *Evaluator) ?Value {
-        const parsed = md.comments.parse(self.arena, self.content) catch return null;
+    fn extractCommentsFrom(self: *Evaluator, content: []const u8) ?Value {
+        const parsed = md.comments.parse(self.arena, content) catch return null;
         const items = self.arena.alloc(Value, parsed.len) catch return null;
         for (parsed, 0..) |c, idx| {
             items[idx] = commentToValue(self.arena, c) catch return null;
@@ -767,8 +775,8 @@ pub const Evaluator = struct {
         return .{ .array = items };
     }
 
-    fn extractFootnotes(self: *Evaluator) ?Value {
-        const parsed = md.footnotes.parse(self.arena, self.content) catch return null;
+    fn extractFootnotesFrom(self: *Evaluator, content: []const u8) ?Value {
+        const parsed = md.footnotes.parse(self.arena, content) catch return null;
         const items = self.arena.alloc(Value, parsed.len) catch return null;
         for (parsed, 0..) |f, idx| {
             items[idx] = footnoteToValue(self.arena, f) catch return null;
@@ -2313,6 +2321,57 @@ test "section append" {
 }
 
 // keys and has tests
+
+test "section piped to headings extracts only section headings" {
+    const doc =
+        \\# Intro
+        \\intro text
+        \\## Methods
+        \\### Sub Method
+        \\method details
+        \\## Results
+        \\### Sub Result
+        \\results text
+        \\
+    ;
+    const val = testEval("section(\"## Methods\") | headings", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("Sub Method", val.array[0].record.get("text").?.string);
+}
+
+test "section piped to links extracts only section links" {
+    const doc =
+        \\# Intro
+        \\See [intro](https://intro.com).
+        \\## Methods
+        \\See [method](https://method.com) and [[wiki]].
+        \\## Results
+        \\See [result](https://result.com).
+        \\
+    ;
+    const val = testEval("section(\"## Methods\") | links", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqualStrings("https://method.com", val.array[0].record.get("target").?.string);
+    try testing.expectEqualStrings("wiki", val.array[1].record.get("target").?.string);
+}
+
+test "section piped to tags extracts only section tags" {
+    const doc =
+        \\# Intro
+        \\#intro-tag
+        \\## Methods
+        \\#method-tag content
+        \\## Results
+        \\#result-tag
+        \\
+    ;
+    const val = testEval("section(\"## Methods\") | tags", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("method-tag", val.array[0].record.get("name").?.string);
+}
 
 test "keys on frontmatter" {
     const val = testEval("frontmatter | keys", test_doc).?;

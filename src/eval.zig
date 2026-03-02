@@ -559,12 +559,17 @@ pub const Evaluator = struct {
             },
         };
 
-        // Find section in content and replace
-        if (std.mem.indexOf(u8, self.content, section_text)) |pos| {
+        // Use pointer arithmetic to find exact position when section_text
+        // is a slice of self.content (from section()). Falls back to
+        // substring search for other cases.
+        const pos = sliceOffset(self.content, section_text) orelse
+            std.mem.indexOf(u8, self.content, section_text);
+
+        if (pos) |p| {
             var result = std.ArrayListUnmanaged(u8).empty;
-            result.appendSlice(self.arena, self.content[0..pos]) catch return null;
+            result.appendSlice(self.arena, self.content[0..p]) catch return null;
             result.appendSlice(self.arena, replacement) catch return null;
-            result.appendSlice(self.arena, self.content[pos + section_text.len ..]) catch return null;
+            result.appendSlice(self.arena, self.content[p + section_text.len ..]) catch return null;
             return .{ .string = result.toOwnedSlice(self.arena) catch return null };
         }
 
@@ -598,9 +603,11 @@ pub const Evaluator = struct {
             },
         };
 
-        // Find end of section in content and insert
-        if (std.mem.indexOf(u8, self.content, section_text)) |pos| {
-            const insert_pos = pos + section_text.len;
+        const pos = sliceOffset(self.content, section_text) orelse
+            std.mem.indexOf(u8, self.content, section_text);
+
+        if (pos) |p| {
+            const insert_pos = p + section_text.len;
             var result = std.ArrayListUnmanaged(u8).empty;
             result.appendSlice(self.arena, self.content[0..insert_pos]) catch return null;
             result.appendSlice(self.arena, append_text) catch return null;
@@ -842,6 +849,19 @@ fn lineStartPos(content: []const u8, target_line: usize) usize {
         pos += 1;
     }
     return pos;
+}
+
+/// If `sub` is a slice of `container`, return its byte offset.
+/// Returns null if `sub` points outside `container`.
+fn sliceOffset(container: []const u8, sub: []const u8) ?usize {
+    const container_start = @intFromPtr(container.ptr);
+    const container_end = container_start + container.len;
+    const sub_start = @intFromPtr(sub.ptr);
+    const sub_end = sub_start + sub.len;
+    if (sub_start >= container_start and sub_end <= container_end) {
+        return sub_start - container_start;
+    }
+    return null;
 }
 
 fn valueToYamlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {

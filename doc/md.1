@@ -1,17 +1,19 @@
-.Dd March 1, 2026
+.Dd March 2, 2026
 .Dt MD 1
 .Os
 .Sh NAME
 .Nm md
-.Nd extract and manipulate Markdown content
+.Nd query and transform Markdown files
 .Sh SYNOPSIS
 .Nm
-.Ar command
+.Ar program
 .Op Fl -json
+.Op Fl -dir Ar directory
+.Op Fl i
 .Op Ar file
 .Sh DESCRIPTION
 .Nm
-is a command-line utility for working with Markdown files.
+evaluates a jq-inspired DSL program against a Markdown file.
 It parses Markdown leniently, preferring best-effort results over strict errors.
 .Pp
 If no
@@ -24,121 +26,156 @@ Plain text output is the default.
 Use
 .Fl -json
 for structured output.
-.Sh COMMANDS
-.Bl -tag -width "frontmatter"
-.It Ic body Op Ar file
-Output the document body without frontmatter.
-.It Ic frontmatter Oo Fl -json Oc Op Ar file
-Output raw YAML frontmatter.
-.Ic fm
-is accepted as an alias.
-.It Ic frontmatter Oo Fl i Oc Ar file Fl -set Ar key Ns = Ns Ar value Op Fl -del Ar key ...
-Edit frontmatter fields.
-.Fl -set
-and
-.Fl -del
-flags can be repeated and mixed freely.
-.Pp
-.Fl -set Ar key Ns = Ns Ar value
-sets a field. If the key exists, its value is replaced.
-If no frontmatter exists, one is created.
-.Pp
-.Fl -del Ar key
-deletes a field.
-.Pp
-Output goes to standard output by default.
-Use
-.Fl i
-to edit the file in-place.
-.It Ic headings Oo Fl -json Oc Op Ar file
-List headings with their depth and line numbers.
-.It Ic links Oo Fl -json Oc Op Ar file
-List outgoing links.
-Supports standard Markdown links, Obsidian wikilinks, images, and embeds.
-.It Ic links Fl -incoming Oo Fl -json Oc Oo Fl -dir Ar directory Oc Ar file
-List incoming links to
-.Ar file
-by scanning other Markdown files.
-Wikilinks are matched by basename.
-Standard links are resolved relative to the source file.
-.Pp
-By default, scans the parent directory of
-.Ar file .
-Use
+.Sh DSL
+The DSL uses pipelines to chain operations.
+Each stage receives the output of the previous stage.
+.Ss Extractors
+Extractors pull structured data from the document:
+.Bl -tag -width "frontmatter" -compact
+.It Ic frontmatter
+YAML frontmatter as a record.
+.It Ic body
+Document body without frontmatter.
+.It Ic headings
+Headings with depth, text, and line number.
+.It Ic links
+Links with kind, target, text, and line number.
+Kinds: standard, wikilink, image, embed.
+.It Ic tags
+Inline tags with name and line number.
+.It Ic codeblocks
+Code blocks with language, content, start/end lines.
+.It Ic stats
+Word and line counts.
+.It Ic comments
+HTML and Obsidian comments with kind, text, and line.
+.It Ic footnotes
+Footnote definitions with label, text, and line.
+.It Ic incoming
+Files linking to the input file. Requires
 .Fl -dir
-to specify a different directory.
-.It Ic tags Oo Fl -json Oc Op Ar file
-Extract inline
-.Li #tags
-with deduplication.
-.It Ic codeblocks Oo Fl -json Oc Op Ar file
-List code blocks with language and line ranges.
-Supports fenced blocks (backtick and tilde) and indented blocks
-(4+ spaces or tab).
-.It Ic stats Oo Fl -json Oc Op Ar file
-Show word count and line count.
-.It Ic section Ar heading Op Ar file
-Extract content under a specific heading.
-The
-.Ar heading
-can include depth markers
-.Pq e.g., Dq ## API
-or just the heading text.
-Content includes everything until the next heading of equal or lesser depth.
+or a file argument.
+Returns source path, link kind, and line.
 .El
+.Ss Field Access
+Use
+.Li .field
+to access record fields. Nested access:
+.Li .author.name .
+.Ss Filtering
+.Ic select(predicate)
+filters arrays.
+Predicates support comparisons
+.Pq Li "==, !=, <, >, <=, >=" ,
+boolean logic
+.Pq Li "and, or, not" ,
+and string functions
+.Pq Li "contains(), startswith()" .
+.Ss List Operations
+.Bl -tag -width "group(.field)" -compact
+.It Ic first
+First element.
+.It Ic last
+Last element.
+.It Ic count
+Array length.
+.It Ic reverse
+Reverse order.
+.It Ic map(.field)
+Extract a field from each element.
+.It Ic unique
+Deduplicate values.
+.It Ic sort(.field)
+Sort by field.
+.It Ic group(.field)
+Group into a record keyed by field value.
+.El
+.Ss Record Operations
+.Bl -tag -width "has(name)" -compact
+.It Ic keys
+List record keys.
+.It Ic has(name)
+Check if a field exists.
+.El
+.Ss Mutation
+.Bl -tag -width "replace(text)" -compact
+.It Ic set(.field, value)
+Set a frontmatter field. Produces the modified document.
+.It Ic del(.field)
+Delete a frontmatter field. Produces the modified document.
+.It Ic section(heading)
+Extract content under a heading.
+.It Ic replace(text)
+Replace section content. Produces the modified document.
+.It Ic append(text)
+Append to section content. Produces the modified document.
+.El
+.Ss Link Validation
+.Bl -tag -width "resolve" -compact
+.It Ic exists
+Add
+.Li .exists
+boolean to link records.
+.It Ic resolve
+Add
+.Li .path
+with the resolved filesystem path.
+.El
+.Ss Comma Operator
+Multiple outputs from the same input:
+.Li ".title, .draft" .
 .Sh OPTIONS
 .Bl -tag -width Ds
 .It Fl -json
 Output in JSON format.
+.It Fl -dir Ar directory
+Directory for
+.Ic incoming ,
+.Ic exists ,
+and
+.Ic resolve .
+.It Fl i
+Edit the file in-place. The program must produce a document string.
 .It Fl -help
 Show usage information.
-.It Fl i
-.Pq Ic frontmatter No with Fl -set No or Fl -del No only
-Edit the file in-place instead of writing to standard output.
-.It Fl -set Ar key Ns = Ns Ar value
-.Pq Ic frontmatter No only
-Set a frontmatter field. Can be repeated.
-.It Fl -del Ar key
-.Pq Ic frontmatter No only
-Delete a frontmatter field. Can be repeated.
-.It Fl -incoming
-.Pq Ic links No only
-Scan for incoming links instead of listing outgoing links.
-.It Fl -dir Ar directory
-.Pq Ic links --incoming No only
-Directory to scan for incoming links.
 .El
 .Sh EXIT STATUS
 .Ex -std
 .Sh EXAMPLES
-Extract the body of a Markdown file:
-.Dl md body notes.md
+Get a frontmatter field:
+.Dl md 'frontmatter | .title' notes.md
 .Pp
-List headings as JSON:
-.Dl md headings --json notes.md | jq '.[] | select(.depth == 2)'
+List h2 headings:
+.Dl md 'headings | select(.depth == 2)' notes.md
 .Pp
-Set multiple frontmatter fields in-place:
-.Dl md frontmatter -i notes.md --set title=\(dqMy Note\(dq --set draft=true
+Count wikilinks:
+.Dl md 'links | select(.kind == \&"wikilink\&") | count' notes.md
 .Pp
-Delete frontmatter fields:
-.Dl md frontmatter -i notes.md --del draft --del tags
+Set a frontmatter field in-place:
+.Dl md 'frontmatter | set(.draft, false)' -i notes.md
 .Pp
-Mix set and delete:
-.Dl md frontmatter notes.md --set status=published --del draft
+Delete a frontmatter field:
+.Dl md 'frontmatter | del(.tags)' -i notes.md
 .Pp
-Find all files linking to a note:
-.Dl md links --incoming notes.md --dir ./vault/
+Extract a section:
+.Dl md 'section(\&"## API\&")' notes.md
 .Pp
-Extract a section by heading:
-.Dl md section \(dq## API\(dq notes.md
+Find broken links:
+.Dl md 'links | exists | select(.exists == false)' --dir ./vault/ notes.md
+.Pp
+Find incoming links:
+.Dl md 'incoming' --dir ./vault/ notes.md
+.Pp
+JSON output:
+.Dl md 'headings' --json notes.md
 .Pp
 Read from stdin:
-.Dl cat notes.md | md tags
+.Dl cat notes.md | md 'tags | map(.name) | unique'
 .Pp
-Process all Markdown files in a directory:
-.Dl find vault/ -name '*.md' | xargs -I{} md tags {}
+Process all files in a vault:
+.Dl find vault/ -name '*.md' -exec md 'frontmatter | .title' {} \e;
 .Sh SUPPORTED FORMATS
-.Bl -bullet
+.Bl -bullet -compact
 .It
 Standard Markdown links:
 .Li [text](url)
@@ -165,4 +202,13 @@ Indented code blocks (4+ spaces or tab)
 .It
 Inline tags
 .Pq Li #tag
+.It
+HTML comments
+.Pq Li "<!-- ... -->"
+.It
+Obsidian comments
+.Pq Li "%% ... %%"
+.It
+Footnote definitions
+.Pq Li "[^label]: text"
 .El

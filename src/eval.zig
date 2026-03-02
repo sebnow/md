@@ -1103,7 +1103,7 @@ fn scanIncoming(
 
         const links = md.links.parse(arena, content) catch continue;
         for (links) |link| {
-            if (linkMatchesTarget(link, target_path, target_basename, source_path)) {
+            if (linkMatchesTarget(arena, link, target_path, target_basename, source_path)) {
                 const val = recordFromPairs(arena, &.{
                     .{ "source", .{ .string = source_path } },
                     .{ "kind", .{ .string = @tagName(link.kind) } },
@@ -1116,6 +1116,7 @@ fn scanIncoming(
 }
 
 fn linkMatchesTarget(
+    arena: std.mem.Allocator,
     link: md.links.Link,
     target_path: []const u8,
     target_basename: []const u8,
@@ -1133,12 +1134,12 @@ fn linkMatchesTarget(
 
     const source_dir = std.fs.path.dirname(source_path) orelse ".";
     const resolved = std.fs.path.resolve(
-        std.heap.page_allocator,
+        arena,
         &.{ source_dir, link_target },
     ) catch return false;
 
     const target_resolved = std.fs.path.resolve(
-        std.heap.page_allocator,
+        arena,
         &.{target_path},
     ) catch return false;
 

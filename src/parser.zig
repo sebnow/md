@@ -397,8 +397,12 @@ pub const Parser = struct {
     /// Format the parse error as a diagnostic string.
     /// Returns null if no error occurred.
     pub fn formatError(self: *Parser, buf: []u8) ?[]const u8 {
+        return self.formatErrorWithPrefix(0, buf);
+    }
+
+    pub fn formatErrorWithPrefix(self: *Parser, prefix_len: usize, buf: []u8) ?[]const u8 {
         const e = self.err orelse return null;
-        return lexer_mod.formatError(self.lexer.source, e.pos, e.message, buf);
+        return lexer_mod.formatErrorWithPrefix(self.lexer.source, e.pos, e.message, prefix_len, buf);
     }
 };
 

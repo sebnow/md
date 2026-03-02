@@ -123,7 +123,7 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
     var parser = md.parser.Parser.init(arena, args.program);
     const node = parser.parse() orelse {
         var buf: [512]u8 = undefined;
-        if (parser.formatError(&buf)) |msg| {
+        if (parser.formatErrorWithPrefix("md: ".len, &buf)) |msg| {
             out.writeErr("md: ");
             out.writeErr(msg);
             out.writeErr("\n");

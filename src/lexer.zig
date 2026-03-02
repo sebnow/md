@@ -46,13 +46,17 @@ pub const Token = struct {
 ///   frontmatter | .title ==
 ///                         ^^ expected expression
 pub fn formatError(source: []const u8, pos: usize, message: []const u8, buf: []u8) []const u8 {
+    return formatErrorWithPrefix(source, pos, message, 0, buf);
+}
+
+pub fn formatErrorWithPrefix(source: []const u8, pos: usize, message: []const u8, prefix_len: usize, buf: []u8) []const u8 {
     var stream = std.io.fixedBufferStream(buf);
     const writer = stream.writer();
-    writeError(source, pos, message, writer) catch {};
+    writeError(source, pos, message, prefix_len, writer) catch {};
     return stream.getWritten();
 }
 
-fn writeError(source: []const u8, pos: usize, message: []const u8, writer: anytype) !void {
+fn writeError(source: []const u8, pos: usize, message: []const u8, prefix_len: usize, writer: anytype) !void {
     // Find the line containing pos
     var line_start: usize = 0;
     var idx: usize = 0;
@@ -69,8 +73,8 @@ fn writeError(source: []const u8, pos: usize, message: []const u8, writer: anyty
     try writer.writeAll(line);
     try writer.writeByte('\n');
 
-    // Write caret at the right column
-    for (0..col) |_| {
+    // Write caret at the right column, accounting for any prefix on the source line
+    for (0..col + prefix_len) |_| {
         try writer.writeByte(' ');
     }
     try writer.writeByte('^');

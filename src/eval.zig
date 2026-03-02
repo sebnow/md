@@ -177,6 +177,7 @@ pub const Evaluator = struct {
             if (std.mem.eql(u8, fc.name, "count")) return self.evalCount(input.?);
             if (std.mem.eql(u8, fc.name, "unique")) return self.evalUnique(input.?);
             if (std.mem.eql(u8, fc.name, "reverse")) return self.evalReverse(input.?);
+            if (std.mem.eql(u8, fc.name, "exists")) return self.evalExists(input.?);
         }
 
         self.setError("unknown function", 0);
@@ -795,6 +796,97 @@ pub const Evaluator = struct {
         var results = std.ArrayListUnmanaged(Value).empty;
         scanIncoming(self.arena, dir, scan_dir_path, file_path, target_basename, &results) catch return null;
         return .{ .array = results.toOwnedSlice(self.arena) catch return null };
+    }
+
+    fn evalExists(self: *Evaluator, input: Value) ?Value {
+        switch (input) {
+            .array => |arr| {
+                const items = self.arena.alloc(Value, arr.len) catch return null;
+                for (arr, 0..) |item, idx| {
+                    items[idx] = self.addExistsField(item) orelse return null;
+                }
+                return .{ .array = items };
+            },
+            .record => return self.addExistsField(input),
+            else => {
+                self.setError("exists requires link records as input", 0);
+                return null;
+            },
+        }
+    }
+
+    fn addExistsField(self: *Evaluator, val: Value) ?Value {
+        const rec = switch (val) {
+            .record => |r| r,
+            else => {
+                self.setError("exists requires link records as input", 0);
+                return null;
+            },
+        };
+
+        const target = rec.get("target") orelse {
+            self.setError("exists: record has no target field", 0);
+            return null;
+        };
+        const target_str = switch (target) {
+            .string => |s| s,
+            else => {
+                self.setError("exists: target must be a string", 0);
+                return null;
+            },
+        };
+
+        const kind = rec.get("kind");
+        const kind_str = if (kind) |k| switch (k) {
+            .string => |s| s,
+            else => null,
+        } else null;
+
+        const file_exists = self.checkLinkExists(target_str, kind_str);
+
+        const new_keys = self.arena.alloc([]const u8, rec.keys.len + 1) catch return null;
+        const new_vals = self.arena.alloc(Value, rec.values.len + 1) catch return null;
+        @memcpy(new_keys[0..rec.keys.len], rec.keys);
+        @memcpy(new_vals[0..rec.values.len], rec.values);
+        new_keys[rec.keys.len] = "exists";
+        new_vals[rec.values.len] = .{ .bool = file_exists };
+
+        return .{ .record = .{ .keys = new_keys, .values = new_vals } };
+    }
+
+    fn checkLinkExists(self: *Evaluator, target: []const u8, kind: ?[]const u8) bool {
+        // Strip fragment
+        const path = if (std.mem.indexOfScalar(u8, target, '#')) |hash|
+            target[0..hash]
+        else
+            target;
+
+        if (path.len == 0) return true; // anchor-only link
+        if (std.mem.indexOf(u8, path, "://") != null) return true; // URL
+
+        const is_wiki = if (kind) |k|
+            std.mem.eql(u8, k, "wikilink") or std.mem.eql(u8, k, "embed")
+        else
+            false;
+
+        const base_dir = if (is_wiki)
+            self.dir_path orelse self.fileDir()
+        else
+            self.fileDir();
+
+        const dir_path = base_dir orelse return false;
+        const dir = std.fs.cwd().openDir(dir_path, .{}) catch return false;
+
+        if (dir.statFile(path)) |_| return true else |_| {}
+
+        const with_md = std.fmt.allocPrint(self.arena, "{s}.md", .{path}) catch return false;
+        if (dir.statFile(with_md)) |_| return true else |_| {}
+
+        return false;
+    }
+
+    fn fileDir(self: *Evaluator) ?[]const u8 {
+        return if (self.file_path) |fp| std.fs.path.dirname(fp) orelse "." else null;
     }
 
     fn evalLiteral(self: *Evaluator, lit: Node.Literal) Value {
@@ -2225,4 +2317,48 @@ test "incoming returns empty when no links" {
 test "incoming without file_path produces error" {
     const val = testEvalWithPaths("incoming", "content\n", null, null);
     try testing.expect(val == null);
+}
+
+// exists tests
+
+test "exists adds field to link records" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "existing.md", "# Exists\n");
+
+    const doc = "See [[existing]] and [[missing]].\n";
+    const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
+    const val = testEvalWithPaths("links | exists", doc, fp, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+
+    const first = val.array[0];
+    try testing.expectEqualStrings("existing", first.record.get("target").?.string);
+    try testing.expectEqual(true, first.record.get("exists").?.bool);
+
+    const second = val.array[1];
+    try testing.expectEqualStrings("missing", second.record.get("target").?.string);
+    try testing.expectEqual(false, second.record.get("exists").?.bool);
+}
+
+test "exists with select filters broken links" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "good.md", "# Good\n");
+
+    const doc = "See [[good]] and [[bad]].\n";
+    const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
+    const val = testEvalWithPaths(
+        "links | exists | select(.exists == false)",
+        doc,
+        fp,
+        tmp.path,
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("bad", val.array[0].record.get("target").?.string);
 }

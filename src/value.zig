@@ -20,9 +20,6 @@ pub const Value = union(enum) {
             return null;
         }
 
-        pub fn count(self: Record) usize {
-            return self.keys.len;
-        }
     };
 
     pub fn renderPlain(self: Value, writer: anytype) !void {

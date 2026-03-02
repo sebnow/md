@@ -126,6 +126,7 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
         if (parser.formatError(&buf)) |msg| {
             out.writeErr("md: ");
             out.writeErr(msg);
+            out.writeErr("\n");
         } else {
             out.writeErr("md: failed to parse program\n");
         }

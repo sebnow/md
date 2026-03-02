@@ -876,7 +876,8 @@ pub const Evaluator = struct {
             self.fileDir();
 
         const dir_path = base_dir orelse return false;
-        const dir = std.fs.cwd().openDir(dir_path, .{}) catch return false;
+        var dir = std.fs.cwd().openDir(dir_path, .{}) catch return false;
+        defer dir.close();
 
         if (dir.statFile(path)) |_| return true else |_| {}
 
@@ -951,7 +952,8 @@ pub const Evaluator = struct {
 
         const base_dir = self.dir_path orelse self.fileDir() orelse return target;
 
-        const dir = std.fs.cwd().openDir(base_dir, .{}) catch return target;
+        var dir = std.fs.cwd().openDir(base_dir, .{}) catch return target;
+        defer dir.close();
         if (dir.statFile(path)) |_| {
             return std.fs.path.join(self.arena, &.{ base_dir, path }) catch return target;
         } else |_| {}

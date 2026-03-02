@@ -88,19 +88,28 @@ pub const Evaluator = struct {
     }
 
     fn evalFnCall(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
-        // Extractors: operate on document content, ignore input
-        if (fc.args.len == 0 and input == null) {
-            return self.evalExtractor(fc.name);
-        }
-        // Extractors piped into: also ignore input value
+        // Extractors: operate on document content
         if (fc.args.len == 0) {
-            if (self.isExtractor(fc.name)) {
+            if (input == null or self.isExtractor(fc.name)) {
                 return self.evalExtractor(fc.name);
             }
         }
 
-        // Built-in functions with args are handled in later commits
-        // For now, treat unknown functions as errors
+        // select(predicate): filter arrays
+        if (std.mem.eql(u8, fc.name, "select")) {
+            return self.evalSelect(fc, input);
+        }
+
+        // contains(field, substring) or contains(., substring)
+        if (std.mem.eql(u8, fc.name, "contains")) {
+            return self.evalContains(fc, input);
+        }
+
+        // startswith(field, prefix) or startswith(., prefix)
+        if (std.mem.eql(u8, fc.name, "startswith")) {
+            return self.evalStartswith(fc, input);
+        }
+
         self.setError("unknown function", 0);
         return null;
     }
@@ -126,6 +135,82 @@ pub const Evaluator = struct {
         if (std.mem.eql(u8, name, "codeblocks")) return self.extractCodeblocks();
         if (std.mem.eql(u8, name, "stats")) return self.extractStats();
         return null;
+    }
+
+    fn evalSelect(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 1) {
+            self.setError("select() requires exactly one argument", 0);
+            return null;
+        }
+        const predicate = fc.args[0];
+        const inp = input orelse {
+            self.setError("select() requires input", 0);
+            return null;
+        };
+
+        switch (inp) {
+            .array => |arr| {
+                var results = std.ArrayListUnmanaged(Value).empty;
+                for (arr) |item| {
+                    const pred_val = self.evalWithInput(predicate, item) orelse continue;
+                    if (isTruthy(pred_val)) {
+                        results.append(self.arena, item) catch return null;
+                    }
+                }
+                const slice = results.toOwnedSlice(self.arena) catch return null;
+                return .{ .array = slice };
+            },
+            else => {
+                // select on a single value: return it if predicate is true, null otherwise
+                const pred_val = self.evalWithInput(predicate, inp) orelse return null;
+                if (isTruthy(pred_val)) return inp;
+                return .null;
+            },
+        }
+    }
+
+    fn evalContains(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 2) {
+            self.setError("contains() requires two arguments", 0);
+            return null;
+        }
+
+        const inp = input orelse .null;
+        const field_val = self.evalWithInput(fc.args[0], inp) orelse return null;
+        const substr_val = self.evalWithInput(fc.args[1], inp) orelse return null;
+
+        const haystack = switch (field_val) {
+            .string => |s| s,
+            else => return .{ .bool = false },
+        };
+        const needle = switch (substr_val) {
+            .string => |s| s,
+            else => return .{ .bool = false },
+        };
+
+        return .{ .bool = std.mem.indexOf(u8, haystack, needle) != null };
+    }
+
+    fn evalStartswith(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 2) {
+            self.setError("startswith() requires two arguments", 0);
+            return null;
+        }
+
+        const inp = input orelse .null;
+        const field_val = self.evalWithInput(fc.args[0], inp) orelse return null;
+        const prefix_val = self.evalWithInput(fc.args[1], inp) orelse return null;
+
+        const haystack = switch (field_val) {
+            .string => |s| s,
+            else => return .{ .bool = false },
+        };
+        const prefix = switch (prefix_val) {
+            .string => |s| s,
+            else => return .{ .bool = false },
+        };
+
+        return .{ .bool = std.mem.startsWith(u8, haystack, prefix) };
     }
 
     fn extractFrontmatter(self: *Evaluator) ?Value {
@@ -844,4 +929,158 @@ test "plain render of array of records" {
     try testing.expect(out.len > 0);
     try testing.expect(std.mem.indexOf(u8, out, "A") != null);
     try testing.expect(std.mem.indexOf(u8, out, "B") != null);
+}
+
+// select() tests
+
+test "select filters array by field equality" {
+    const val = testEval(
+        "headings | select(.depth == 2)",
+        "# H1\n## H2a\n### H3\n## H2b\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqualStrings("H2a", val.array[0].record.get("text").?.string);
+    try testing.expectEqualStrings("H2b", val.array[1].record.get("text").?.string);
+}
+
+test "select with not equal" {
+    const val = testEval(
+        "headings | select(.depth != 1)",
+        "# H1\n## H2\n### H3\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+}
+
+test "select with greater than" {
+    const val = testEval(
+        "headings | select(.depth > 1)",
+        "# H1\n## H2\n### H3\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+}
+
+test "select with less than or equal" {
+    const val = testEval(
+        "headings | select(.depth <= 2)",
+        "# H1\n## H2\n### H3\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+}
+
+test "select with and" {
+    const val = testEval(
+        "headings | select(.depth >= 2 and .depth <= 2)",
+        "# H1\n## H2\n### H3\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("H2", val.array[0].record.get("text").?.string);
+}
+
+test "select with or" {
+    const val = testEval(
+        "headings | select(.depth == 1 or .depth == 3)",
+        "# H1\n## H2\n### H3\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+}
+
+test "select with not" {
+    const val = testEval(
+        "headings | select(not (.depth == 1))",
+        "# H1\n## H2\n### H3\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+}
+
+test "select returns empty array when nothing matches" {
+    const val = testEval(
+        "headings | select(.depth == 5)",
+        "# H1\n## H2\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 0), val.array.len);
+}
+
+test "select on links by kind" {
+    const doc = "Check [link](https://example.com) and [[wikilink]].\n";
+    const val = testEval("links | select(.kind == \"wikilink\")", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("wikilink", val.array[0].record.get("target").?.string);
+}
+
+test "select on codeblocks by language" {
+    const doc = "```go\nfunc main() {}\n```\n```zig\nconst x = 1;\n```\n";
+    const val = testEval("codeblocks | select(.language == \"go\")", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+}
+
+// contains() tests
+
+test "contains on field" {
+    const doc = "Visit [GitHub](https://github.com/foo) today.\n";
+    const val = testEval(
+        "links | select(contains(.target, \"github\"))",
+        doc,
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+}
+
+test "contains no match" {
+    const doc = "Visit [Example](https://example.com) today.\n";
+    const val = testEval(
+        "links | select(contains(.target, \"github\"))",
+        doc,
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 0), val.array.len);
+}
+
+test "contains on heading text" {
+    const val = testEval(
+        "headings | select(contains(.text, \"API\"))",
+        "# Intro\n## API Reference\n## Other\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("API Reference", val.array[0].record.get("text").?.string);
+}
+
+// startswith() tests
+
+test "startswith on field" {
+    const doc = "Visit [a](https://example.com) and [b](ftp://files.com).\n";
+    const val = testEval(
+        "links | select(startswith(.target, \"https\"))",
+        doc,
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+}
+
+test "startswith no match" {
+    const doc = "Visit [a](ftp://files.com).\n";
+    const val = testEval(
+        "links | select(startswith(.target, \"https\"))",
+        doc,
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 0), val.array.len);
+}
+
+test "select string equality on tags" {
+    const doc = "Some #draft and #review text.\n";
+    const val = testEval("tags | select(.name == \"draft\")", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("draft", val.array[0].record.get("name").?.string);
 }

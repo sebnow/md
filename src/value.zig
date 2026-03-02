@@ -191,15 +191,14 @@ test "float plain" {
     const val: Value = .{ .float = 3.14 };
     const out = try renderPlainAlloc(testing.allocator, val);
     defer testing.allocator.free(out);
-    // Zig prints 3.14e0 for {d} format on floats
-    try testing.expect(out.len > 0);
+    try testing.expectEqualStrings("3.14", out);
 }
 
 test "float json" {
     const val: Value = .{ .float = 2.5 };
     const out = try renderJsonAlloc(testing.allocator, val);
     defer testing.allocator.free(out);
-    try testing.expect(out.len > 0);
+    try testing.expectEqualStrings("2.5", out);
 }
 
 test "bool true plain" {

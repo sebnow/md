@@ -1,102 +1,212 @@
 # md
 
-A command-line utility for working with Markdown files.
+A command-line tool for querying and transforming Markdown files
+using a jq-inspired DSL.
 Designed for composability with other Unix tools,
-and particularly useful for LLM agents
+and useful for LLM agents
 that need to read and manipulate Markdown.
 
 `md` parses Markdown leniently,
 preferring best-effort results over strict errors.
 
-## Features
+## Usage
 
-### Frontmatter
-
-Read and write YAML frontmatter.
-
-```sh
-# Extract raw frontmatter
-md frontmatter notes.md
-
-# Set fields (stdout by default)
-md frontmatter notes.md --set title="My Note"
-
-# Set multiple fields
-md frontmatter notes.md --set title="My Note" --set draft=true
-
-# Delete fields
-md frontmatter notes.md --del draft --del tags
-
-# Mix set and delete
-md frontmatter notes.md --set title=New --del draft
-
-# Edit in-place (like sed -i)
-md frontmatter -i notes.md --set title="My Note" --del draft
+```
+md '<program>' [options] [file]
 ```
 
-### Body
+If no file is given, reads from stdin.
 
-Output the document body without frontmatter.
+### Options
+
+- `--json` — output in JSON format
+- `--dir <path>` — directory for `incoming`/`exists`/`resolve`
+- `-i` — edit file in-place (for mutations)
+
+## Extractors
+
+Extractors pull structured data from the document.
 
 ```sh
-md body notes.md
+# YAML frontmatter as a record
+md 'frontmatter' notes.md
+
+# Document body without frontmatter
+md 'body' notes.md
+
+# Headings with depth and line number
+md 'headings' notes.md
+
+# Links (standard, wikilink, image, embed)
+md 'links' notes.md
+
+# Inline tags
+md 'tags' notes.md
+
+# Fenced and indented code blocks
+md 'codeblocks' notes.md
+
+# Word and line counts
+md 'stats' notes.md
+
+# HTML and Obsidian comments
+md 'comments' notes.md
+
+# Footnote definitions
+md 'footnotes' notes.md
+
+# Files linking to this one (scans directory)
+md 'incoming' --dir ./vault/ notes.md
 ```
 
-### Links
+## Pipelines
 
-List outgoing links from a file.
-Supports standard Markdown links, Obsidian `[[wikilinks]]`,
-and embeds (`![]()`, `![[]]`).
+Chain operations with `|`, like jq.
 
 ```sh
-# List outgoing links
-md links notes.md
+# Get a frontmatter field
+md 'frontmatter | .title' notes.md
 
-# List incoming links (scans directory for files linking to target)
-md links --incoming notes.md
-md links --incoming notes.md --dir ./vault/
+# Nested field access
+md 'frontmatter | .author.name' notes.md
+
+# Count headings
+md 'headings | count' notes.md
+
+# First h2 heading text
+md 'headings | select(.depth == 2) | first | .text' notes.md
 ```
 
-### Headings
+## Filtering
 
-List headings with their depth and line numbers.
+`select()` filters arrays by predicate.
+Supports comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`),
+boolean logic (`and`, `or`, `not`),
+and string functions (`contains()`, `startswith()`).
 
 ```sh
-md headings notes.md
-md headings --json notes.md | jq '.[] | select(.depth == 2)'
+# Only h2 headings
+md 'headings | select(.depth == 2)' notes.md
+
+# Wikilinks only
+md 'links | select(.kind == "wikilink")' notes.md
+
+# Links containing "github"
+md 'links | select(contains(.target, "github"))' notes.md
+
+# Tags matching a name
+md 'tags | select(.name == "draft")' notes.md
+
+# Go code blocks
+md 'codeblocks | select(.language == "go") | first | .content' notes.md
+
+# Obsidian comments only
+md 'comments | select(.kind == "obsidian")' notes.md
 ```
 
-### Sections
-
-Extract the content under a specific heading.
+## List Operations
 
 ```sh
-md section "## API" notes.md
+md 'headings | first' notes.md
+md 'headings | last' notes.md
+md 'headings | count' notes.md
+md 'headings | reverse' notes.md
+md 'links | map(.target)' notes.md
+md 'links | map(.target) | unique' notes.md
+md 'headings | sort(.depth)' notes.md
+md 'links | group(.kind)' notes.md
 ```
 
-### Tags
-
-Extract tags from frontmatter and inline `#tags`.
+## Record Operations
 
 ```sh
-md tags notes.md
+# List frontmatter keys
+md 'frontmatter | keys' notes.md
+
+# Check if a field exists
+md 'frontmatter | has("draft")' notes.md
 ```
 
-### Code Blocks
+## Frontmatter Mutation
 
-List fenced code blocks with language and line ranges.
+`set()` and `del()` modify frontmatter fields.
+Use `-i` for in-place editing.
 
 ```sh
-md codeblocks notes.md
-md codeblocks --json notes.md | jq '.[] | select(.language == "go")'
+# Set a field (prints modified document to stdout)
+md 'frontmatter | set(.title, "New Title")' notes.md
+
+# Delete a field
+md 'frontmatter | del(.draft)' notes.md
+
+# Edit in-place
+md 'frontmatter | set(.draft, false)' -i notes.md
 ```
 
-### Stats
+## Section Operations
 
-Word count, line count, and other basic statistics.
+Extract and modify content under a heading.
 
 ```sh
-md stats notes.md
+# Extract section content
+md 'section("## Methods")' notes.md
+
+# Match by heading text (any depth)
+md 'section("Methods")' notes.md
+
+# Replace section content
+md 'section("## Methods") | replace("new content\n")' -i notes.md
+
+# Append to a section
+md 'section("## Notes") | append("extra text\n")' -i notes.md
+```
+
+## Link Validation
+
+Check whether link targets exist on disk.
+
+```sh
+# Add .exists field to each link
+md 'links | exists' --dir ./vault/ notes.md
+
+# Find broken links
+md 'links | exists | select(.exists == false)' --dir ./vault/ notes.md
+
+# Resolve wikilink paths
+md 'links | resolve' --dir ./vault/ notes.md
+```
+
+## Multiple Outputs
+
+The comma operator produces multiple values from the same input.
+
+```sh
+md 'frontmatter | .title, .draft' notes.md
+```
+
+## JSON Output
+
+Add `--json` for structured output.
+
+```sh
+md 'headings' --json notes.md
+md 'links | select(.kind == "wikilink")' --json notes.md
+```
+
+## Composing with Shell Tools
+
+`md` follows the Unix philosophy.
+Use standard tools for multi-file operations.
+
+```sh
+# Find all draft files
+find vault/ -name '*.md' -exec md 'frontmatter | .draft' {} \;
+
+# List all wikilink targets across a vault
+find vault/ -name '*.md' -exec md 'links | select(.kind == "wikilink") | map(.target)' {} \; | sort -u
+
+# Count words in all files
+find vault/ -name '*.md' -exec sh -c 'echo "$(md "stats | .words" "$1") $1"' _ {} \;
 ```
 
 ## Supported Formats
@@ -109,19 +219,13 @@ md stats notes.md
 - Fenced code blocks (backtick and tilde)
 - Indented code blocks (4+ spaces or tab)
 - Inline tags (`#tag`)
-
-## Design
-
-- **Lax parsing** — best-effort, never fails on malformed input.
-- **Unix philosophy** — single-purpose commands,
-  composable with pipes and other tools.
-- **Stdin support** — reads from stdin when no file argument is given.
-- **Plain text default** — human-readable output by default,
-  `--json` for structured output.
+- HTML comments (`<!-- ... -->`)
+- Obsidian comments (`%% ... %%`)
+- Footnote definitions (`[^label]: text`)
 
 ## Building
 
-Requires Zig 0.15.2.
+Requires Zig 0.15.
 
 ```sh
 zig build

@@ -178,6 +178,7 @@ pub const Evaluator = struct {
             if (std.mem.eql(u8, fc.name, "unique")) return self.evalUnique(input.?);
             if (std.mem.eql(u8, fc.name, "reverse")) return self.evalReverse(input.?);
             if (std.mem.eql(u8, fc.name, "exists")) return self.evalExists(input.?);
+            if (std.mem.eql(u8, fc.name, "resolve")) return self.evalResolve(input.?);
         }
 
         self.setError("unknown function", 0);
@@ -887,6 +888,80 @@ pub const Evaluator = struct {
 
     fn fileDir(self: *Evaluator) ?[]const u8 {
         return if (self.file_path) |fp| std.fs.path.dirname(fp) orelse "." else null;
+    }
+
+    fn evalResolve(self: *Evaluator, input: Value) ?Value {
+        switch (input) {
+            .array => |arr| {
+                const items = self.arena.alloc(Value, arr.len) catch return null;
+                for (arr, 0..) |item, idx| {
+                    items[idx] = self.addResolvedField(item) orelse return null;
+                }
+                return .{ .array = items };
+            },
+            .record => return self.addResolvedField(input),
+            else => {
+                self.setError("resolve requires link records as input", 0);
+                return null;
+            },
+        }
+    }
+
+    fn addResolvedField(self: *Evaluator, val: Value) ?Value {
+        const rec = switch (val) {
+            .record => |r| r,
+            else => {
+                self.setError("resolve requires link records as input", 0);
+                return null;
+            },
+        };
+
+        const target = rec.get("target") orelse {
+            self.setError("resolve: record has no target field", 0);
+            return null;
+        };
+        const target_str = switch (target) {
+            .string => |s| s,
+            else => {
+                self.setError("resolve: target must be a string", 0);
+                return null;
+            },
+        };
+
+        const resolved = self.resolveLinkPath(target_str);
+
+        const new_keys = self.arena.alloc([]const u8, rec.keys.len + 1) catch return null;
+        const new_vals = self.arena.alloc(Value, rec.values.len + 1) catch return null;
+        @memcpy(new_keys[0..rec.keys.len], rec.keys);
+        @memcpy(new_vals[0..rec.values.len], rec.values);
+        new_keys[rec.keys.len] = "path";
+        new_vals[rec.values.len] = .{ .string = resolved };
+
+        return .{ .record = .{ .keys = new_keys, .values = new_vals } };
+    }
+
+    fn resolveLinkPath(self: *Evaluator, target: []const u8) []const u8 {
+        const path = if (std.mem.indexOfScalar(u8, target, '#')) |hash|
+            target[0..hash]
+        else
+            target;
+
+        if (path.len == 0) return target; // anchor-only
+        if (std.mem.indexOf(u8, path, "://") != null) return target; // URL
+
+        const base_dir = self.dir_path orelse self.fileDir() orelse return target;
+
+        const dir = std.fs.cwd().openDir(base_dir, .{}) catch return target;
+        if (dir.statFile(path)) |_| {
+            return std.fs.path.join(self.arena, &.{ base_dir, path }) catch return target;
+        } else |_| {}
+
+        const with_md = std.fmt.allocPrint(self.arena, "{s}.md", .{path}) catch return target;
+        if (dir.statFile(with_md)) |_| {
+            return std.fs.path.join(self.arena, &.{ base_dir, with_md }) catch return target;
+        } else |_| {}
+
+        return target;
     }
 
     fn evalLiteral(self: *Evaluator, lit: Node.Literal) Value {
@@ -2361,4 +2436,36 @@ test "exists with select filters broken links" {
     try testing.expect(val == .array);
     try testing.expectEqual(@as(usize, 1), val.array.len);
     try testing.expectEqualStrings("bad", val.array[0].record.get("target").?.string);
+}
+
+// resolve tests
+
+test "resolve adds path to link records" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "target.md", "# Target\n");
+
+    const doc = "See [[target]].\n";
+    const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
+    const val = testEvalWithPaths("links | resolve", doc, fp, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+
+    const resolved = val.array[0].record.get("path").?.string;
+    try testing.expect(std.mem.endsWith(u8, resolved, "target.md"));
+}
+
+test "resolve on unresolvable link returns original target" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    const doc = "See [[nonexistent]].\n";
+    const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
+    const val = testEvalWithPaths("links | resolve", doc, fp, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("nonexistent", val.array[0].record.get("path").?.string);
 }

@@ -187,7 +187,7 @@ pub const Evaluator = struct {
             if (std.mem.eql(u8, fc.name, "toml")) return self.evalToml(input.?);
         }
 
-        self.setError("unknown function", 0);
+        self.setErrorFmt("unknown function: {s}", .{fc.name});
         return null;
     }
 
@@ -1127,6 +1127,13 @@ pub const Evaluator = struct {
     fn setError(self: *Evaluator, message: []const u8, pos: usize) void {
         if (self.err == null) {
             self.err = .{ .message = message, .pos = pos };
+        }
+    }
+
+    fn setErrorFmt(self: *Evaluator, comptime fmt: []const u8, args: anytype) void {
+        if (self.err == null) {
+            const message = std.fmt.allocPrint(self.arena, fmt, args) catch return;
+            self.err = .{ .message = message, .pos = 0 };
         }
     }
 };

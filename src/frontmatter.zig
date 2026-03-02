@@ -1,29 +1,41 @@
 const std = @import("std");
 
+pub const Format = enum {
+    yaml,
+    toml,
+};
+
 pub const Frontmatter = struct {
     raw: []const u8,
     body: []const u8,
+    format: Format,
 };
 
-/// Extract YAML frontmatter and body from markdown content.
-/// Frontmatter must start at the beginning of the document with `---`
-/// followed by a newline, and end with `---` followed by a newline or EOF.
+/// Extract frontmatter and body from markdown content.
+/// Supports YAML (`---` delimiters) and TOML (`+++` delimiters).
 /// Returns null if no frontmatter is found.
 /// All returned slices reference the input buffer — no allocations.
 pub fn extract(content: []const u8) ?Frontmatter {
-    // Must start with "---" followed by newline
-    const after_opening = skipDelimiter(content, 0) orelse return null;
+    if (extractWithDelimiter(content, "---")) |fm| {
+        return .{ .raw = fm.raw, .body = fm.body, .format = .yaml };
+    }
+    if (extractWithDelimiter(content, "+++")) |fm| {
+        return .{ .raw = fm.raw, .body = fm.body, .format = .toml };
+    }
+    return null;
+}
 
-    // Find the closing delimiter
+fn extractWithDelimiter(content: []const u8, comptime delimiter: []const u8) ?struct { raw: []const u8, body: []const u8 } {
+    const after_opening = skipDelimiter(content, 0, delimiter) orelse return null;
+
     var pos = after_opening;
     while (pos < content.len) {
-        if (skipDelimiter(content, pos)) |after_closing| {
+        if (skipDelimiter(content, pos, delimiter)) |after_closing| {
             return .{
                 .raw = content[after_opening..pos],
                 .body = content[after_closing..],
             };
         }
-        // Advance to next line
         pos = nextLine(content, pos);
     }
 
@@ -34,13 +46,15 @@ pub fn extract(content: []const u8) ?Frontmatter {
     };
 }
 
-/// If content[pos..] starts with "---" followed by optional whitespace and a
-/// newline (or EOF), returns the position after that line. Otherwise null.
-fn skipDelimiter(content: []const u8, pos: usize) ?usize {
-    if (content.len < pos + 3) return null;
-    if (!std.mem.eql(u8, content[pos..][0..3], "---")) return null;
+/// If content[pos..] starts with `delimiter` followed by optional whitespace
+/// and a newline (or EOF), returns the position after that line.
+fn skipDelimiter(content: []const u8, pos: usize, comptime delimiter: []const u8) ?usize {
+    if (content.len < pos + delimiter.len) return null;
+    if (!std.mem.eql(u8, content[pos..][0..delimiter.len], delimiter)) return null;
 
-    var i = pos + 3;
+    var i = pos + delimiter.len;
+    // Reject longer runs (e.g. "----" is not "---")
+    if (i < content.len and content[i] == delimiter[0]) return null;
     // Allow trailing whitespace on the delimiter line
     while (i < content.len and (content[i] == ' ' or content[i] == '\t')) : (i += 1) {}
 
@@ -554,6 +568,44 @@ test "delimiter at EOF" {
     const result = extract(input).?;
     try std.testing.expectEqualStrings("title: x\n", result.raw);
     try std.testing.expectEqualStrings("", result.body);
+    try std.testing.expectEqual(Format.yaml, result.format);
+}
+
+// TOML frontmatter tests
+
+test "toml frontmatter basic" {
+    const input = "+++\ntitle = \"Hello\"\ndraft = true\n+++\n# Body\n";
+    const result = extract(input).?;
+    try std.testing.expectEqualStrings("title = \"Hello\"\ndraft = true\n", result.raw);
+    try std.testing.expectEqualStrings("# Body\n", result.body);
+    try std.testing.expectEqual(Format.toml, result.format);
+}
+
+test "toml frontmatter at EOF" {
+    const input = "+++\ntitle = \"x\"\n+++";
+    const result = extract(input).?;
+    try std.testing.expectEqualStrings("title = \"x\"\n", result.raw);
+    try std.testing.expectEqualStrings("", result.body);
+    try std.testing.expectEqual(Format.toml, result.format);
+}
+
+test "toml frontmatter empty" {
+    const input = "+++\n+++\n# Body\n";
+    const result = extract(input).?;
+    try std.testing.expectEqualStrings("", result.raw);
+    try std.testing.expectEqualStrings("# Body\n", result.body);
+    try std.testing.expectEqual(Format.toml, result.format);
+}
+
+test "four pluses not treated as toml delimiter" {
+    const result = extract("++++\ntitle = \"x\"\n+++\n");
+    try std.testing.expectEqual(null, result);
+}
+
+test "yaml format tag" {
+    const input = "---\ntitle: x\n---\n";
+    const result = extract(input).?;
+    try std.testing.expectEqual(Format.yaml, result.format);
 }
 
 // setField tests

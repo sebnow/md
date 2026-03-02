@@ -23,9 +23,17 @@ pub const Evaluator = struct {
     arena: std.mem.Allocator,
     content: []const u8,
     err: ?EvalError,
+    file_path: ?[]const u8,
+    dir_path: ?[]const u8,
 
     pub fn init(arena: std.mem.Allocator, content: []const u8) Evaluator {
-        return .{ .arena = arena, .content = content, .err = null };
+        return .{
+            .arena = arena,
+            .content = content,
+            .err = null,
+            .file_path = null,
+            .dir_path = null,
+        };
     }
 
     pub fn eval(self: *Evaluator, node: *const Node) ?Value {

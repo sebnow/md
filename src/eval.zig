@@ -100,14 +100,38 @@ pub const Evaluator = struct {
             return self.evalSelect(fc, input);
         }
 
-        // contains(field, substring) or contains(., substring)
+        // contains(field, substring)
         if (std.mem.eql(u8, fc.name, "contains")) {
             return self.evalContains(fc, input);
         }
 
-        // startswith(field, prefix) or startswith(., prefix)
+        // startswith(field, prefix)
         if (std.mem.eql(u8, fc.name, "startswith")) {
             return self.evalStartswith(fc, input);
+        }
+
+        // map(.field): extract field from each element
+        if (std.mem.eql(u8, fc.name, "map")) {
+            return self.evalMap(fc, input);
+        }
+
+        // sort(.field): sort array by field
+        if (std.mem.eql(u8, fc.name, "sort")) {
+            return self.evalSort(fc, input);
+        }
+
+        // group(.field): group array by field
+        if (std.mem.eql(u8, fc.name, "group")) {
+            return self.evalGroup(fc, input);
+        }
+
+        // No-arg builtins that operate on input
+        if (fc.args.len == 0 and input != null) {
+            if (std.mem.eql(u8, fc.name, "first")) return self.evalFirst(input.?);
+            if (std.mem.eql(u8, fc.name, "last")) return self.evalLast(input.?);
+            if (std.mem.eql(u8, fc.name, "count")) return self.evalCount(input.?);
+            if (std.mem.eql(u8, fc.name, "unique")) return self.evalUnique(input.?);
+            if (std.mem.eql(u8, fc.name, "reverse")) return self.evalReverse(input.?);
         }
 
         self.setError("unknown function", 0);
@@ -211,6 +235,179 @@ pub const Evaluator = struct {
         };
 
         return .{ .bool = std.mem.startsWith(u8, haystack, prefix) };
+    }
+
+    fn evalFirst(self: *Evaluator, input: Value) ?Value {
+        _ = self;
+        return switch (input) {
+            .array => |arr| if (arr.len > 0) arr[0] else .null,
+            else => input,
+        };
+    }
+
+    fn evalLast(self: *Evaluator, input: Value) ?Value {
+        _ = self;
+        return switch (input) {
+            .array => |arr| if (arr.len > 0) arr[arr.len - 1] else .null,
+            else => input,
+        };
+    }
+
+    fn evalCount(self: *Evaluator, input: Value) ?Value {
+        _ = self;
+        return switch (input) {
+            .array => |arr| .{ .int = @intCast(arr.len) },
+            .string => |s| .{ .int = @intCast(s.len) },
+            .record => |rec| .{ .int = @intCast(rec.keys.len) },
+            else => .{ .int = 1 },
+        };
+    }
+
+    fn evalUnique(self: *Evaluator, input: Value) ?Value {
+        const arr = switch (input) {
+            .array => |a| a,
+            else => return input,
+        };
+
+        var results = std.ArrayListUnmanaged(Value).empty;
+        for (arr) |item| {
+            var found = false;
+            for (results.items) |existing| {
+                if (item.eql(existing)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                results.append(self.arena, item) catch return null;
+            }
+        }
+        const slice = results.toOwnedSlice(self.arena) catch return null;
+        return .{ .array = slice };
+    }
+
+    fn evalReverse(self: *Evaluator, input: Value) ?Value {
+        const arr = switch (input) {
+            .array => |a| a,
+            else => return input,
+        };
+
+        const reversed = self.arena.alloc(Value, arr.len) catch return null;
+        for (arr, 0..) |item, idx| {
+            reversed[arr.len - 1 - idx] = item;
+        }
+        return .{ .array = reversed };
+    }
+
+    fn evalMap(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 1) {
+            self.setError("map() requires exactly one argument", 0);
+            return null;
+        }
+        const inp = input orelse {
+            self.setError("map() requires input", 0);
+            return null;
+        };
+        const arr = switch (inp) {
+            .array => |a| a,
+            else => {
+                // map on single value
+                return self.evalWithInput(fc.args[0], inp);
+            },
+        };
+
+        const results = self.arena.alloc(Value, arr.len) catch return null;
+        for (arr, 0..) |item, idx| {
+            results[idx] = self.evalWithInput(fc.args[0], item) orelse .null;
+        }
+        return .{ .array = results };
+    }
+
+    fn evalSort(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 1) {
+            self.setError("sort() requires exactly one argument", 0);
+            return null;
+        }
+        const inp = input orelse {
+            self.setError("sort() requires input", 0);
+            return null;
+        };
+        const arr = switch (inp) {
+            .array => |a| a,
+            else => return inp,
+        };
+
+        const sorted = self.arena.alloc(Value, arr.len) catch return null;
+        @memcpy(sorted, arr);
+
+        const key_expr = fc.args[0];
+        const ctx = SortContext{ .evaluator = self, .key_expr = key_expr };
+        std.mem.sort(Value, sorted, ctx, SortContext.lessThan);
+
+        return .{ .array = sorted };
+    }
+
+    fn evalGroup(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 1) {
+            self.setError("group() requires exactly one argument", 0);
+            return null;
+        }
+        const inp = input orelse {
+            self.setError("group() requires input", 0);
+            return null;
+        };
+        const arr = switch (inp) {
+            .array => |a| a,
+            else => return inp,
+        };
+
+        const key_expr = fc.args[0];
+
+        // Collect unique group keys and their items
+        var group_keys = std.ArrayListUnmanaged(Value).empty;
+        var group_items = std.ArrayListUnmanaged(std.ArrayListUnmanaged(Value)).empty;
+
+        for (arr) |item| {
+            const key_val = self.evalWithInput(key_expr, item) orelse .null;
+
+            var found_idx: ?usize = null;
+            for (group_keys.items, 0..) |existing, idx| {
+                if (key_val.eql(existing)) {
+                    found_idx = idx;
+                    break;
+                }
+            }
+
+            if (found_idx) |idx| {
+                group_items.items[idx].append(self.arena, item) catch return null;
+            } else {
+                group_keys.append(self.arena, key_val) catch return null;
+                var new_list = std.ArrayListUnmanaged(Value).empty;
+                new_list.append(self.arena, item) catch return null;
+                group_items.append(self.arena, new_list) catch return null;
+            }
+        }
+
+        // Build result: record with key → array
+        const keys = self.arena.alloc([]const u8, group_keys.items.len) catch return null;
+        const vals = self.arena.alloc(Value, group_keys.items.len) catch return null;
+
+        for (group_keys.items, 0..) |key_val, idx| {
+            // Convert key to string for record key
+            keys[idx] = switch (key_val) {
+                .string => |s| s,
+                else => blk: {
+                    var buf: std.ArrayListUnmanaged(u8) = .empty;
+                    key_val.renderPlain(buf.writer(self.arena)) catch break :blk "";
+                    break :blk buf.toOwnedSlice(self.arena) catch "";
+                },
+            };
+            var items_list = group_items.items[idx];
+            const slice = items_list.toOwnedSlice(self.arena) catch return null;
+            vals[idx] = .{ .array = slice };
+        }
+
+        return .{ .record = .{ .keys = keys, .values = vals } };
     }
 
     fn extractFrontmatter(self: *Evaluator) ?Value {
@@ -358,6 +555,17 @@ pub const Evaluator = struct {
         if (self.err == null) {
             self.err = .{ .message = message, .pos = pos };
         }
+    }
+};
+
+const SortContext = struct {
+    evaluator: *Evaluator,
+    key_expr: *const Node,
+
+    fn lessThan(ctx: SortContext, a: Value, b: Value) bool {
+        const a_key = ctx.evaluator.evalWithInput(ctx.key_expr, a) orelse .null;
+        const b_key = ctx.evaluator.evalWithInput(ctx.key_expr, b) orelse .null;
+        return compareValues(a_key, b_key) == .lt;
     }
 };
 
@@ -1083,4 +1291,143 @@ test "select string equality on tags" {
     try testing.expect(val == .array);
     try testing.expectEqual(@as(usize, 1), val.array.len);
     try testing.expectEqualStrings("draft", val.array[0].record.get("name").?.string);
+}
+
+// first, last, count tests
+
+test "first on array" {
+    const val = testEval("headings | first", "# A\n## B\n### C\n").?;
+    try testing.expect(val == .record);
+    try testing.expectEqualStrings("A", val.record.get("text").?.string);
+}
+
+test "first on empty array" {
+    const val = testEval("headings | first", "no headings\n").?;
+    try testing.expect(val == .null);
+}
+
+test "last on array" {
+    const val = testEval("headings | last", "# A\n## B\n### C\n").?;
+    try testing.expect(val == .record);
+    try testing.expectEqualStrings("C", val.record.get("text").?.string);
+}
+
+test "count on array" {
+    const val = testEval("headings | count", "# A\n## B\n### C\n").?;
+    try testing.expect(val == .int);
+    try testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "count on empty array" {
+    const val = testEval("headings | count", "no headings\n").?;
+    try testing.expect(val == .int);
+    try testing.expectEqual(@as(i64, 0), val.int);
+}
+
+test "count after select" {
+    const val = testEval(
+        "headings | select(.depth == 2) | count",
+        "# A\n## B\n## C\n### D\n",
+    ).?;
+    try testing.expect(val == .int);
+    try testing.expectEqual(@as(i64, 2), val.int);
+}
+
+// map tests
+
+test "map extracts field" {
+    const val = testEval(
+        "headings | map(.text)",
+        "# A\n## B\n### C\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 3), val.array.len);
+    try testing.expectEqualStrings("A", val.array[0].string);
+    try testing.expectEqualStrings("B", val.array[1].string);
+    try testing.expectEqualStrings("C", val.array[2].string);
+}
+
+test "map on links targets" {
+    const doc = "Visit [a](https://a.com) and [b](https://b.com).\n";
+    const val = testEval("links | map(.target)", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqualStrings("https://a.com", val.array[0].string);
+    try testing.expectEqualStrings("https://b.com", val.array[1].string);
+}
+
+// unique tests
+
+test "unique deduplicates strings" {
+    const val = testEval(
+        "links | map(.target) | unique",
+        "[a](https://x.com) and [b](https://x.com) and [c](https://y.com).\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+}
+
+// reverse tests
+
+test "reverse array" {
+    const val = testEval(
+        "headings | map(.text) | reverse",
+        "# A\n## B\n### C\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 3), val.array.len);
+    try testing.expectEqualStrings("C", val.array[0].string);
+    try testing.expectEqualStrings("B", val.array[1].string);
+    try testing.expectEqualStrings("A", val.array[2].string);
+}
+
+// sort tests
+
+test "sort by field" {
+    const val = testEval(
+        "headings | sort(.depth) | map(.text)",
+        "### C\n# A\n## B\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 3), val.array.len);
+    try testing.expectEqualStrings("A", val.array[0].string);
+    try testing.expectEqualStrings("B", val.array[1].string);
+    try testing.expectEqualStrings("C", val.array[2].string);
+}
+
+test "sort reverse" {
+    const val = testEval(
+        "headings | sort(.depth) | reverse | map(.text)",
+        "### C\n# A\n## B\n",
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqualStrings("C", val.array[0].string);
+}
+
+// group tests
+
+test "group by field" {
+    const val = testEval(
+        "links | group(.kind)",
+        "[a](https://a.com) and [[b]] and [c](https://c.com).\n",
+    ).?;
+    try testing.expect(val == .record);
+    const standard = val.record.get("standard");
+    try testing.expect(standard != null);
+    try testing.expect(standard.? == .array);
+    try testing.expectEqual(@as(usize, 2), standard.?.array.len);
+    const wikilink = val.record.get("wikilink");
+    try testing.expect(wikilink != null);
+    try testing.expectEqual(@as(usize, 1), wikilink.?.array.len);
+}
+
+// Chained operations
+
+test "select then first then field access" {
+    const val = testEval(
+        "codeblocks | select(.language == \"go\") | first | .content",
+        "```go\nfunc main() {}\n```\n```zig\nconst x = 1;\n```\n",
+    ).?;
+    try testing.expect(val == .string);
+    try testing.expectEqualStrings("func main() {}\n", val.string);
 }

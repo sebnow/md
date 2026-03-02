@@ -7,6 +7,8 @@ const md = struct {
     const links = @import("links.zig");
     const codeblocks = @import("codeblocks.zig");
     const tags = @import("tags.zig");
+    const comments = @import("comments.zig");
+    const footnotes = @import("footnotes.zig");
 };
 
 const Node = parser_mod.Node;
@@ -176,8 +178,9 @@ pub const Evaluator = struct {
     fn isExtractor(self: *Evaluator, name: []const u8) bool {
         _ = self;
         const extractors = [_][]const u8{
-            "frontmatter", "body", "headings", "links",
-            "tags",        "codeblocks", "stats",
+            "frontmatter", "body",     "headings", "links",
+            "tags",        "codeblocks", "stats",  "comments",
+            "footnotes",
         };
         for (extractors) |e| {
             if (std.mem.eql(u8, name, e)) return true;
@@ -193,6 +196,8 @@ pub const Evaluator = struct {
         if (std.mem.eql(u8, name, "tags")) return self.extractTags();
         if (std.mem.eql(u8, name, "codeblocks")) return self.extractCodeblocks();
         if (std.mem.eql(u8, name, "stats")) return self.extractStats();
+        if (std.mem.eql(u8, name, "comments")) return self.extractComments();
+        if (std.mem.eql(u8, name, "footnotes")) return self.extractFootnotes();
         return null;
     }
 
@@ -742,6 +747,24 @@ pub const Evaluator = struct {
         });
     }
 
+    fn extractComments(self: *Evaluator) ?Value {
+        const parsed = md.comments.parse(self.arena, self.content) catch return null;
+        const items = self.arena.alloc(Value, parsed.len) catch return null;
+        for (parsed, 0..) |c, idx| {
+            items[idx] = commentToValue(self.arena, c) catch return null;
+        }
+        return .{ .array = items };
+    }
+
+    fn extractFootnotes(self: *Evaluator) ?Value {
+        const parsed = md.footnotes.parse(self.arena, self.content) catch return null;
+        const items = self.arena.alloc(Value, parsed.len) catch return null;
+        for (parsed, 0..) |f, idx| {
+            items[idx] = footnoteToValue(self.arena, f) catch return null;
+        }
+        return .{ .array = items };
+    }
+
     fn evalLiteral(self: *Evaluator, lit: Node.Literal) Value {
         _ = self;
         return switch (lit) {
@@ -957,6 +980,22 @@ fn codeblockToValue(arena: std.mem.Allocator, b: md.codeblocks.CodeBlock) std.me
         .{ "content", .{ .string = b.content } },
         .{ "start_line", .{ .int = @intCast(b.start_line) } },
         .{ "end_line", .{ .int = @intCast(b.end_line) } },
+    }) orelse error.OutOfMemory;
+}
+
+fn commentToValue(arena: std.mem.Allocator, c: md.comments.Comment) std.mem.Allocator.Error!Value {
+    return recordFromPairs(arena, &.{
+        .{ "kind", .{ .string = @tagName(c.kind) } },
+        .{ "text", .{ .string = c.text } },
+        .{ "line", .{ .int = @intCast(c.line) } },
+    }) orelse error.OutOfMemory;
+}
+
+fn footnoteToValue(arena: std.mem.Allocator, f: md.footnotes.Footnote) std.mem.Allocator.Error!Value {
+    return recordFromPairs(arena, &.{
+        .{ "label", .{ .string = f.label } },
+        .{ "text", .{ .string = f.text } },
+        .{ "line", .{ .int = @intCast(f.line) } },
     }) orelse error.OutOfMemory;
 }
 
@@ -1374,6 +1413,61 @@ test "stats field access" {
     const val = testEval("stats | .words", test_doc).?;
     try testing.expect(val == .int);
     try testing.expect(val.int > 0);
+}
+
+test "comments extracts array" {
+    const doc = "text\n<!-- html comment -->\nmore\n%% obsidian comment %%\n";
+    const val = testEval("comments", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqualStrings("html", val.array[0].record.get("kind").?.string);
+    try testing.expectEqualStrings("html comment", val.array[0].record.get("text").?.string);
+    try testing.expectEqualStrings("obsidian", val.array[1].record.get("kind").?.string);
+    try testing.expectEqualStrings("obsidian comment", val.array[1].record.get("text").?.string);
+}
+
+test "comments select by kind" {
+    const doc = "<!-- a -->\n%% b %%\n<!-- c -->\n";
+    const val = testEval("comments | select(.kind == \"obsidian\")", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("b", val.array[0].record.get("text").?.string);
+}
+
+test "comments empty document" {
+    const val = testEval("comments", "no comments here\n").?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 0), val.array.len);
+}
+
+test "footnotes extracts array" {
+    const doc = "Some text.\n\n[^1]: First note\n[^ref]: Second note\n";
+    const val = testEval("footnotes", doc).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqualStrings("1", val.array[0].record.get("label").?.string);
+    try testing.expectEqualStrings("First note", val.array[0].record.get("text").?.string);
+    try testing.expectEqualStrings("ref", val.array[1].record.get("label").?.string);
+}
+
+test "footnotes field access" {
+    const doc = "[^abc]: Some footnote text\n";
+    const val = testEval("footnotes | first | .text", doc).?;
+    try testing.expect(val == .string);
+    try testing.expectEqualStrings("Some footnote text", val.string);
+}
+
+test "footnotes count" {
+    const doc = "[^a]: One\n[^b]: Two\n[^c]: Three\n";
+    const val = testEval("footnotes | count", doc).?;
+    try testing.expect(val == .int);
+    try testing.expectEqual(@as(i64, 3), val.int);
+}
+
+test "footnotes empty document" {
+    const val = testEval("footnotes", "no footnotes\n").?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 0), val.array.len);
 }
 
 test "nested field access" {

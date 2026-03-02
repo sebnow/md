@@ -184,6 +184,7 @@ pub const Evaluator = struct {
             if (std.mem.eql(u8, fc.name, "exists")) return self.evalExists(input.?);
             if (std.mem.eql(u8, fc.name, "resolve")) return self.evalResolve(input.?);
             if (std.mem.eql(u8, fc.name, "yaml")) return self.evalYaml(input.?);
+            if (std.mem.eql(u8, fc.name, "toml")) return self.evalToml(input.?);
         }
 
         self.setError("unknown function", 0);
@@ -716,6 +717,26 @@ pub const Evaluator = struct {
         }
     }
 
+    /// Bidirectional TOML conversion:
+    /// - record → TOML text
+    /// - string → record (parse TOML)
+    fn evalToml(self: *Evaluator, input: Value) ?Value {
+        switch (input) {
+            .record => |rec| {
+                var buf = std.ArrayListUnmanaged(u8).empty;
+                renderRecordAsToml(self.arena, &buf, rec) catch return null;
+                return .{ .string = buf.toOwnedSlice(self.arena) catch return null };
+            },
+            .string => |s| {
+                return parseTomlToValue(self.arena, s);
+            },
+            else => {
+                self.setError("toml requires a record or string as input", 0);
+                return null;
+            },
+        }
+    }
+
     fn extractFieldName(self: *Evaluator, node: *const Node) ?[]const u8 {
         _ = self;
         switch (node.*) {
@@ -729,7 +750,10 @@ pub const Evaluator = struct {
 
     fn extractFrontmatterFrom(self: *Evaluator, content: []const u8) ?Value {
         const fm = md.frontmatter.extract(content) orelse return .null;
-        return parseFrontmatterToValue(self.arena, fm.raw);
+        return switch (fm.format) {
+            .yaml => parseFrontmatterToValue(self.arena, fm.raw),
+            .toml => parseTomlToValue(self.arena, fm.raw),
+        };
     }
 
     fn extractBodyFrom(_: *Evaluator, content: []const u8) Value {
@@ -1292,6 +1316,221 @@ fn renderValueAsYamlInline(writer: anytype, val: Value) !void {
 
 fn writeIndent(writer: anytype, n: usize) !void {
     for (0..n) |_| try writer.writeByte(' ');
+}
+
+// TOML rendering (record → TOML text)
+
+fn renderRecordAsToml(
+    arena: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    rec: Value.Record,
+) std.mem.Allocator.Error!void {
+    const w = buf.writer(arena);
+
+    // Render simple key-value pairs first, then tables
+    for (rec.keys, rec.values) |key, val| {
+        switch (val) {
+            .record => continue,
+            else => {
+                try w.writeAll(key);
+                try w.writeAll(" = ");
+                try renderValueAsTomlInline(w, val);
+                try w.writeByte('\n');
+            },
+        }
+    }
+
+    // Render nested records as [table] sections
+    for (rec.keys, rec.values) |key, val| {
+        switch (val) {
+            .record => |nested| {
+                try w.writeByte('\n');
+                try w.writeByte('[');
+                try w.writeAll(key);
+                try w.writeAll("]\n");
+                for (nested.keys, nested.values) |nk, nv| {
+                    try w.writeAll(nk);
+                    try w.writeAll(" = ");
+                    try renderValueAsTomlInline(w, nv);
+                    try w.writeByte('\n');
+                }
+            },
+            else => continue,
+        }
+    }
+}
+
+fn renderValueAsTomlInline(writer: anytype, val: Value) !void {
+    switch (val) {
+        .string => |s| {
+            try writer.writeByte('"');
+            try writeTomlEscaped(writer, s);
+            try writer.writeByte('"');
+        },
+        .int => |n| try writer.print("{d}", .{n}),
+        .float => |f| try writer.print("{d}", .{f}),
+        .bool => |b| try writer.writeAll(if (b) "true" else "false"),
+        .null => try writer.writeAll("\"\""),
+        .array => |arr| {
+            try writer.writeByte('[');
+            for (arr, 0..) |item, idx| {
+                if (idx > 0) try writer.writeAll(", ");
+                try renderValueAsTomlInline(writer, item);
+            }
+            try writer.writeByte(']');
+        },
+        .record => try writer.writeAll("{}"),
+    }
+}
+
+fn writeTomlEscaped(writer: anytype, s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => try writer.writeByte(c),
+        }
+    }
+}
+
+// TOML parsing (string → record)
+
+pub fn parseTomlToValue(arena: std.mem.Allocator, raw: []const u8) ?Value {
+    var keys = std.ArrayListUnmanaged([]const u8).empty;
+    var vals = std.ArrayListUnmanaged(Value).empty;
+
+    // Track current table for [section] headers
+    var current_keys: *std.ArrayListUnmanaged([]const u8) = &keys;
+    var current_vals: *std.ArrayListUnmanaged(Value) = &vals;
+
+    // Storage for nested table sections
+    var table_keys_storage = std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)).empty;
+    var table_vals_storage = std.ArrayListUnmanaged(std.ArrayListUnmanaged(Value)).empty;
+    var table_names = std.ArrayListUnmanaged([]const u8).empty;
+
+    var pos: usize = 0;
+    while (pos < raw.len) {
+        const line_start = pos;
+        pos = nextLine(raw, pos);
+        const line = stripLineEnding(raw[line_start..pos]);
+
+        // Skip empty lines and comments
+        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        // [table] header
+        if (trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+            const table_name = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t");
+
+            const tk = std.ArrayListUnmanaged([]const u8).empty;
+            const tv = std.ArrayListUnmanaged(Value).empty;
+            table_keys_storage.append(arena, tk) catch return null;
+            table_vals_storage.append(arena, tv) catch return null;
+            table_names.append(arena, table_name) catch return null;
+
+            const last_idx = table_keys_storage.items.len - 1;
+            current_keys = &table_keys_storage.items[last_idx];
+            current_vals = &table_vals_storage.items[last_idx];
+            continue;
+        }
+
+        // key = value
+        const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+        const key = std.mem.trimRight(u8, trimmed[0..eq_pos], " \t");
+        if (key.len == 0) continue;
+        var val_text = std.mem.trimLeft(u8, trimmed[eq_pos + 1 ..], " \t");
+        _ = &val_text;
+
+        current_keys.append(arena, key) catch return null;
+        current_vals.append(arena, parseTomlValue(arena, val_text)) catch return null;
+    }
+
+    // Merge table sections into top-level record
+    for (table_names.items, 0..) |name, idx| {
+        const tk = table_keys_storage.items[idx].toOwnedSlice(arena) catch return null;
+        const tv = table_vals_storage.items[idx].toOwnedSlice(arena) catch return null;
+        keys.append(arena, name) catch return null;
+        vals.append(arena, .{ .record = .{ .keys = tk, .values = tv } }) catch return null;
+    }
+
+    const k = keys.toOwnedSlice(arena) catch return null;
+    const v = vals.toOwnedSlice(arena) catch return null;
+    return .{ .record = .{ .keys = k, .values = v } };
+}
+
+fn parseTomlValue(arena: std.mem.Allocator, text: []const u8) Value {
+    if (text.len == 0) return .null;
+
+    // Boolean
+    if (std.mem.eql(u8, text, "true")) return .{ .bool = true };
+    if (std.mem.eql(u8, text, "false")) return .{ .bool = false };
+
+    // Quoted string
+    if (text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"') {
+        return .{ .string = text[1 .. text.len - 1] };
+    }
+    if (text.len >= 2 and text[0] == '\'' and text[text.len - 1] == '\'') {
+        return .{ .string = text[1 .. text.len - 1] };
+    }
+
+    // Array: [a, b, c]
+    if (text.len >= 2 and text[0] == '[' and text[text.len - 1] == ']') {
+        return parseTomlArray(arena, text[1 .. text.len - 1]);
+    }
+
+    // Integer
+    if (std.fmt.parseInt(i64, text, 10)) |n| {
+        return .{ .int = n };
+    } else |_| {}
+
+    // Float
+    if (std.fmt.parseFloat(f64, text)) |f| {
+        if (std.mem.indexOfScalar(u8, text, '.') != null) {
+            return .{ .float = f };
+        }
+    } else |_| {}
+
+    // Bare string (unusual in TOML but handle leniently)
+    return .{ .string = text };
+}
+
+fn parseTomlArray(arena: std.mem.Allocator, inner: []const u8) Value {
+    var items = std.ArrayListUnmanaged(Value).empty;
+    var pos: usize = 0;
+
+    while (pos < inner.len) {
+        while (pos < inner.len and (inner[pos] == ' ' or inner[pos] == '\t')) : (pos += 1) {}
+        if (pos >= inner.len) break;
+
+        // Handle quoted strings (don't split on commas inside quotes)
+        if (inner[pos] == '"' or inner[pos] == '\'') {
+            const quote = inner[pos];
+            const start = pos;
+            pos += 1;
+            while (pos < inner.len and inner[pos] != quote) : (pos += 1) {}
+            if (pos < inner.len) pos += 1; // skip closing quote
+            items.append(arena, parseTomlValue(arena, inner[start..pos])) catch
+                return .{ .array = &.{} };
+            // Skip comma
+            while (pos < inner.len and (inner[pos] == ' ' or inner[pos] == '\t' or inner[pos] == ',')) : (pos += 1) {}
+        } else {
+            const start = pos;
+            while (pos < inner.len and inner[pos] != ',') : (pos += 1) {}
+            var end = pos;
+            while (end > start and (inner[end - 1] == ' ' or inner[end - 1] == '\t')) : (end -= 1) {}
+            if (end > start) {
+                items.append(arena, parseTomlValue(arena, inner[start..end])) catch
+                    return .{ .array = &.{} };
+            }
+            if (pos < inner.len) pos += 1; // skip comma
+        }
+    }
+
+    const slice = items.toOwnedSlice(arena) catch return .{ .array = &.{} };
+    return .{ .array = slice };
 }
 
 fn valueToYamlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {
@@ -2790,4 +3029,110 @@ test "yaml: roundtrip record -> yaml -> record" {
     try testing.expect(val == .record);
     try testing.expectEqualStrings("Roundtrip", val.record.get("title").?.string);
     try testing.expectEqual(false, val.record.get("draft").?.bool);
+}
+
+// toml builtin tests
+
+test "toml: record to toml text" {
+    const doc =
+        \\---
+        \\title: Hello
+        \\draft: true
+        \\count: 42
+        \\---
+        \\body
+        \\
+    ;
+    const out = testRender("frontmatter | toml", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "title = \"Hello\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "draft = true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "count = 42") != null);
+}
+
+test "toml: string to record" {
+    const code_doc = "```toml\ntitle = \"Parsed\"\ncount = 7\n```\n";
+    const val = testEval(
+        "codeblocks | first | .content | toml",
+        code_doc,
+    ).?;
+    try testing.expect(val == .record);
+    try testing.expectEqualStrings("Parsed", val.record.get("title").?.string);
+    try testing.expectEqual(@as(i64, 7), val.record.get("count").?.int);
+}
+
+test "toml: record with array" {
+    const doc =
+        \\---
+        \\tags: [alpha, beta]
+        \\---
+        \\body
+        \\
+    ;
+    const out = testRender("frontmatter | toml", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "tags = [\"alpha\", \"beta\"]") != null);
+}
+
+test "toml: parse array" {
+    const code_doc = "```toml\ntags = [\"a\", \"b\", \"c\"]\n```\n";
+    const val = testEval(
+        "codeblocks | first | .content | toml | .tags",
+        code_doc,
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 3), val.array.len);
+    try testing.expectEqualStrings("a", val.array[0].string);
+}
+
+test "toml: parse section headers" {
+    const code_doc = "```toml\ntitle = \"Doc\"\n\n[author]\nname = \"Alice\"\nemail = \"a@b.com\"\n```\n";
+    const val = testEval(
+        "codeblocks | first | .content | toml",
+        code_doc,
+    ).?;
+    try testing.expect(val == .record);
+    try testing.expectEqualStrings("Doc", val.record.get("title").?.string);
+    const author = val.record.get("author").?;
+    try testing.expect(author == .record);
+    try testing.expectEqualStrings("Alice", author.record.get("name").?.string);
+}
+
+test "toml: record with nested record renders as table" {
+    const doc =
+        \\---
+        \\title: Hello
+        \\author:
+        \\  name: Alice
+        \\---
+        \\body
+        \\
+    ;
+    const out = testRender("frontmatter | toml", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "title = \"Hello\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "[author]") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "name = \"Alice\"") != null);
+}
+
+test "toml: roundtrip record -> toml -> record" {
+    const doc =
+        \\---
+        \\title: Roundtrip
+        \\draft: false
+        \\count: 5
+        \\---
+        \\body
+        \\
+    ;
+    const val = testEval("frontmatter | toml | toml", doc).?;
+    try testing.expect(val == .record);
+    try testing.expectEqualStrings("Roundtrip", val.record.get("title").?.string);
+    try testing.expectEqual(false, val.record.get("draft").?.bool);
+    try testing.expectEqual(@as(i64, 5), val.record.get("count").?.int);
+}
+
+test "toml: frontmatter from toml document" {
+    const doc = "+++\ntitle = \"TOML Doc\"\ndraft = true\n+++\n# Body\n";
+    const val = testEval("frontmatter", doc).?;
+    try testing.expect(val == .record);
+    try testing.expectEqualStrings("TOML Doc", val.record.get("title").?.string);
+    try testing.expectEqual(true, val.record.get("draft").?.bool);
 }

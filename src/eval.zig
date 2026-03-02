@@ -929,7 +929,13 @@ pub const Evaluator = struct {
             },
         };
 
-        const resolved = self.resolveLinkPath(target_str);
+        const kind = rec.get("kind");
+        const kind_str = if (kind) |k| switch (k) {
+            .string => |s| s,
+            else => null,
+        } else null;
+
+        const resolved = self.resolveLinkPath(target_str, kind_str);
 
         const new_keys = self.arena.alloc([]const u8, rec.keys.len + 1) catch return null;
         const new_vals = self.arena.alloc(Value, rec.values.len + 1) catch return null;
@@ -941,7 +947,7 @@ pub const Evaluator = struct {
         return .{ .record = .{ .keys = new_keys, .values = new_vals } };
     }
 
-    fn resolveLinkPath(self: *Evaluator, target: []const u8) []const u8 {
+    fn resolveLinkPath(self: *Evaluator, target: []const u8, kind: ?[]const u8) []const u8 {
         const path = if (std.mem.indexOfScalar(u8, target, '#')) |hash|
             target[0..hash]
         else
@@ -950,17 +956,26 @@ pub const Evaluator = struct {
         if (path.len == 0) return target; // anchor-only
         if (std.mem.indexOf(u8, path, "://") != null) return target; // URL
 
-        const base_dir = self.dir_path orelse self.fileDir() orelse return target;
+        const is_wiki = if (kind) |k|
+            std.mem.eql(u8, k, "wikilink") or std.mem.eql(u8, k, "embed")
+        else
+            false;
 
-        var dir = std.fs.cwd().openDir(base_dir, .{}) catch return target;
+        const base_dir = if (is_wiki)
+            self.dir_path orelse self.fileDir()
+        else
+            self.fileDir();
+
+        const dir_str = base_dir orelse return target;
+        var dir = std.fs.cwd().openDir(dir_str, .{}) catch return target;
         defer dir.close();
         if (dir.statFile(path)) |_| {
-            return std.fs.path.join(self.arena, &.{ base_dir, path }) catch return target;
+            return std.fs.path.join(self.arena, &.{ dir_str, path }) catch return target;
         } else |_| {}
 
         const with_md = std.fmt.allocPrint(self.arena, "{s}.md", .{path}) catch return target;
         if (dir.statFile(with_md)) |_| {
-            return std.fs.path.join(self.arena, &.{ base_dir, with_md }) catch return target;
+            return std.fs.path.join(self.arena, &.{ dir_str, with_md }) catch return target;
         } else |_| {}
 
         return target;

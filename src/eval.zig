@@ -1133,6 +1133,11 @@ fn scanIncoming(
     var walker = try dir.walk(arena);
     defer walker.deinit();
 
+    // Per-file allocator that resets after each file to avoid accumulating
+    // all file contents in the main arena.
+    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer scratch.deinit();
+
     while (try walker.next()) |entry| {
         if (entry.kind != .file) continue;
         if (!isMarkdownFile(entry.basename)) continue;
@@ -1140,13 +1145,16 @@ fn scanIncoming(
         const source_path = try std.fs.path.join(arena, &.{ dir_path, entry.path });
         if (std.mem.eql(u8, source_path, target_path)) continue;
 
+        defer _ = scratch.reset(.retain_capacity);
+        const scratch_alloc = scratch.allocator();
+
         const file = dir.openFile(entry.path, .{}) catch continue;
         defer file.close();
-        const content = file.readToEndAlloc(arena, max_file_size) catch continue;
+        const content = file.readToEndAlloc(scratch_alloc, max_file_size) catch continue;
 
-        const links = md.links.parse(arena, content) catch continue;
+        const links = md.links.parse(scratch_alloc, content) catch continue;
         for (links) |link| {
-            if (linkMatchesTarget(arena, link, target_path, target_basename, source_path)) {
+            if (linkMatchesTarget(scratch_alloc, link, target_path, target_basename, source_path)) {
                 const val = recordFromPairs(arena, &.{
                     .{ "source", .{ .string = source_path } },
                     .{ "kind", .{ .string = @tagName(link.kind) } },

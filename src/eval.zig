@@ -638,10 +638,8 @@ pub const Evaluator = struct {
             return null;
         };
 
-        const arg_val = if (input) |i| self.evalWithInput(fc.args[0], i) else self.eval(fc.args[0]);
-        _ = arg_val;
-        const field_name_val = self.eval(fc.args[0]) orelse return null;
-        const field_name = switch (field_name_val) {
+        const arg_val = self.eval(fc.args[0]) orelse return null;
+        const field_name = switch (arg_val) {
             .string => |s| s,
             else => {
                 self.setError("has() argument must be a string", 0);

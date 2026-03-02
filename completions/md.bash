@@ -1,48 +1,18 @@
 _md() {
-    local cur prev words cword
+    local cur prev
     _init_completion || return
 
-    local commands="body frontmatter fm headings links tags codeblocks stats section"
-    local global_opts="--json --help"
-
-    if ((cword == 1)); then
-        COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "--json --dir -i --help" -- "$cur"))
         return
     fi
 
-    local cmd="${words[1]}"
+    if [[ "$prev" == "--dir" ]]; then
+        _filedir -d
+        return
+    fi
 
-    case "$cmd" in
-        frontmatter|fm)
-            if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "--json --set --del -i" -- "$cur"))
-            elif [[ "$prev" == "--set" ]]; then
-                # Expect key=value, no completion
-                return
-            elif [[ "$prev" == "--del" ]]; then
-                # Expect key, no completion
-                return
-            else
-                _filedir 'md'
-            fi
-            ;;
-        links)
-            if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "--json --incoming --dir" -- "$cur"))
-            elif [[ "$prev" == "--dir" ]]; then
-                _filedir -d
-            else
-                _filedir 'md'
-            fi
-            ;;
-        body|headings|tags|codeblocks|stats|section)
-            if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "$global_opts" -- "$cur"))
-            else
-                _filedir 'md'
-            fi
-            ;;
-    esac
+    _filedir 'md'
 }
 
 complete -F _md md

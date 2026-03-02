@@ -186,9 +186,9 @@ pub const Evaluator = struct {
     fn isExtractor(self: *Evaluator, name: []const u8) bool {
         _ = self;
         const extractors = [_][]const u8{
-            "frontmatter", "body",     "headings", "links",
-            "tags",        "codeblocks", "stats",  "comments",
-            "footnotes",
+            "frontmatter", "body",      "headings",  "links",
+            "tags",        "codeblocks", "stats",    "comments",
+            "footnotes",   "incoming",
         };
         for (extractors) |e| {
             if (std.mem.eql(u8, name, e)) return true;
@@ -206,6 +206,7 @@ pub const Evaluator = struct {
         if (std.mem.eql(u8, name, "stats")) return self.extractStats();
         if (std.mem.eql(u8, name, "comments")) return self.extractComments();
         if (std.mem.eql(u8, name, "footnotes")) return self.extractFootnotes();
+        if (std.mem.eql(u8, name, "incoming")) return self.extractIncoming();
         return null;
     }
 
@@ -773,6 +774,29 @@ pub const Evaluator = struct {
         return .{ .array = items };
     }
 
+    fn extractIncoming(self: *Evaluator) ?Value {
+        const file_path = self.file_path orelse {
+            self.setError("incoming requires a file path", 0);
+            return null;
+        };
+
+        const target_basename = std.fs.path.stem(file_path);
+        const target_dir = std.fs.path.dirname(file_path);
+        const scan_dir_path = self.dir_path orelse target_dir orelse ".";
+
+        var dir = std.fs.cwd().openDir(scan_dir_path, .{ .iterate = true }) catch |err| {
+            if (err == error.FileNotFound) {
+                self.setError("incoming: directory not found", 0);
+            }
+            return null;
+        };
+        defer dir.close();
+
+        var results = std.ArrayListUnmanaged(Value).empty;
+        scanIncoming(self.arena, dir, scan_dir_path, file_path, target_basename, &results) catch return null;
+        return .{ .array = results.toOwnedSlice(self.arena) catch return null };
+    }
+
     fn evalLiteral(self: *Evaluator, lit: Node.Literal) Value {
         _ = self;
         return switch (lit) {
@@ -884,6 +908,82 @@ fn lineStartPos(content: []const u8, target_line: usize) usize {
 
 /// If `sub` is a slice of `container`, return its byte offset.
 /// Returns null if `sub` points outside `container`.
+const max_file_size = 10 * 1024 * 1024; // 10 MB
+
+fn scanIncoming(
+    arena: std.mem.Allocator,
+    dir: std.fs.Dir,
+    dir_path: []const u8,
+    target_path: []const u8,
+    target_basename: []const u8,
+    results: *std.ArrayListUnmanaged(Value),
+) !void {
+    var walker = try dir.walk(arena);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!isMarkdownFile(entry.basename)) continue;
+
+        const source_path = try std.fs.path.join(arena, &.{ dir_path, entry.path });
+        if (std.mem.eql(u8, source_path, target_path)) continue;
+
+        const file = dir.openFile(entry.path, .{}) catch continue;
+        defer file.close();
+        const content = file.readToEndAlloc(arena, max_file_size) catch continue;
+
+        const links = md.links.parse(arena, content) catch continue;
+        for (links) |link| {
+            if (linkMatchesTarget(link, target_path, target_basename, source_path)) {
+                const val = recordFromPairs(arena, &.{
+                    .{ "source", .{ .string = source_path } },
+                    .{ "kind", .{ .string = @tagName(link.kind) } },
+                    .{ "line", .{ .int = @intCast(link.line) } },
+                }) orelse continue;
+                try results.append(arena, val);
+            }
+        }
+    }
+}
+
+fn linkMatchesTarget(
+    link: md.links.Link,
+    target_path: []const u8,
+    target_basename: []const u8,
+    source_path: []const u8,
+) bool {
+    const link_target = link.target;
+
+    if (link.kind == .wikilink or link.kind == .embed) {
+        const name = if (std.mem.indexOfScalar(u8, link_target, '#')) |hash_pos|
+            link_target[0..hash_pos]
+        else
+            link_target;
+        return std.mem.eql(u8, name, target_basename);
+    }
+
+    const source_dir = std.fs.path.dirname(source_path) orelse ".";
+    const resolved = std.fs.path.resolve(
+        std.heap.page_allocator,
+        &.{ source_dir, link_target },
+    ) catch return false;
+
+    const target_resolved = std.fs.path.resolve(
+        std.heap.page_allocator,
+        &.{target_path},
+    ) catch return false;
+
+    return std.mem.eql(u8, resolved, target_resolved);
+}
+
+fn isMarkdownFile(name: []const u8) bool {
+    return std.mem.endsWith(u8, name, ".md") or
+        std.mem.endsWith(u8, name, ".MD") or
+        std.mem.endsWith(u8, name, ".markdown") or
+        std.mem.endsWith(u8, name, ".Markdown") or
+        std.mem.endsWith(u8, name, ".MARKDOWN");
+}
+
 fn sliceOffset(container: []const u8, sub: []const u8) ?usize {
     const container_start = @intFromPtr(container.ptr);
     const container_end = container_start + container.len;
@@ -2057,4 +2157,72 @@ test "has missing field" {
 test "keys on non-record returns null" {
     const val = testEval("body | keys", test_doc).?;
     try testing.expect(val == .null);
+}
+
+// Filesystem-aware builtin helpers
+
+fn testEvalWithPaths(
+    program: []const u8,
+    content: []const u8,
+    file_path: ?[]const u8,
+    dir_path: ?[]const u8,
+) ?Value {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+    var p = Parser.init(alloc, program);
+    const node = p.parse() orelse return null;
+    var evaluator = Evaluator.init(alloc, content);
+    evaluator.file_path = file_path;
+    evaluator.dir_path = dir_path;
+    return evaluator.eval(node);
+}
+
+fn setupTestDir(alloc: std.mem.Allocator) !struct { dir: std.fs.Dir, path: []const u8 } {
+    const tmp_path = try std.fmt.allocPrint(alloc, "/tmp/md-test-{d}", .{std.time.milliTimestamp()});
+    std.fs.cwd().makeDir(tmp_path) catch {};
+    const dir = try std.fs.cwd().openDir(tmp_path, .{ .iterate = true });
+    return .{ .dir = dir, .path = tmp_path };
+}
+
+fn writeTestFile(dir: std.fs.Dir, name: []const u8, content: []const u8) !void {
+    const file = try dir.createFile(name, .{});
+    defer file.close();
+    try file.writeAll(content);
+}
+
+// incoming tests
+
+test "incoming finds linking files" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "target.md", "# Target\nSome content.\n");
+    try writeTestFile(tmp.dir, "linker.md", "See [[target]] for details.\n");
+    try writeTestFile(tmp.dir, "other.md", "No links here.\n");
+
+    const target = try std.fs.path.join(alloc, &.{ tmp.path, "target.md" });
+    const val = testEvalWithPaths("incoming", "# Target\n", target, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("wikilink", val.array[0].record.get("kind").?.string);
+}
+
+test "incoming returns empty when no links" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "target.md", "# Target\n");
+    try writeTestFile(tmp.dir, "other.md", "No links.\n");
+
+    const target = try std.fs.path.join(alloc, &.{ tmp.path, "target.md" });
+    const val = testEvalWithPaths("incoming", "# Target\n", target, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 0), val.array.len);
+}
+
+test "incoming without file_path produces error" {
+    const val = testEvalWithPaths("incoming", "content\n", null, null);
+    try testing.expect(val == null);
 }

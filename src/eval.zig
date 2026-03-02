@@ -183,6 +183,7 @@ pub const Evaluator = struct {
             if (std.mem.eql(u8, fc.name, "reverse")) return self.evalReverse(input.?);
             if (std.mem.eql(u8, fc.name, "exists")) return self.evalExists(input.?);
             if (std.mem.eql(u8, fc.name, "resolve")) return self.evalResolve(input.?);
+            if (std.mem.eql(u8, fc.name, "yaml")) return self.evalYaml(input.?);
         }
 
         self.setError("unknown function", 0);
@@ -692,6 +693,26 @@ pub const Evaluator = struct {
         switch (inp) {
             .record => |rec| return .{ .bool = rec.get(field_name) != null },
             else => return .{ .bool = false },
+        }
+    }
+
+    /// Bidirectional YAML conversion:
+    /// - record → YAML text
+    /// - string → record (parse YAML)
+    fn evalYaml(self: *Evaluator, input: Value) ?Value {
+        switch (input) {
+            .record => |rec| {
+                var buf = std.ArrayListUnmanaged(u8).empty;
+                renderRecordAsYaml(self.arena, &buf, rec, 0) catch return null;
+                return .{ .string = buf.toOwnedSlice(self.arena) catch return null };
+            },
+            .string => |s| {
+                return parseFrontmatterToValue(self.arena, s);
+            },
+            else => {
+                self.setError("yaml requires a record or string as input", 0);
+                return null;
+            },
         }
     }
 
@@ -1214,6 +1235,63 @@ fn sliceOffset(container: []const u8, sub: []const u8) ?usize {
         return sub_start - container_start;
     }
     return null;
+}
+
+fn renderRecordAsYaml(
+    arena: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    rec: Value.Record,
+    indent: usize,
+) std.mem.Allocator.Error!void {
+    const w = buf.writer(arena);
+    for (rec.keys, rec.values) |key, val| {
+        try writeIndent(w, indent);
+        try w.writeAll(key);
+        try w.writeAll(":");
+        switch (val) {
+            .record => |nested| {
+                try w.writeByte('\n');
+                try renderRecordAsYaml(arena, buf, nested, indent + 2);
+            },
+            .array => |arr| {
+                try w.writeByte('\n');
+                for (arr) |item| {
+                    try writeIndent(w, indent + 2);
+                    try w.writeAll("- ");
+                    try renderValueAsYamlInline(w, item);
+                    try w.writeByte('\n');
+                }
+            },
+            else => {
+                try w.writeByte(' ');
+                try renderValueAsYamlInline(w, val);
+                try w.writeByte('\n');
+            },
+        }
+    }
+}
+
+fn renderValueAsYamlInline(writer: anytype, val: Value) !void {
+    switch (val) {
+        .string => |s| try writer.writeAll(s),
+        .int => |n| try writer.print("{d}", .{n}),
+        .float => |f| try writer.print("{d}", .{f}),
+        .bool => |b| try writer.writeAll(if (b) "true" else "false"),
+        .null => try writer.writeAll("null"),
+        .array => |arr| {
+            try writer.writeByte('[');
+            for (arr, 0..) |item, idx| {
+                if (idx > 0) try writer.writeAll(", ");
+                try renderValueAsYamlInline(writer, item);
+            }
+            try writer.writeByte(']');
+        },
+        .record => try writer.writeAll("{}"),
+    }
+}
+
+fn writeIndent(writer: anytype, n: usize) !void {
+    for (0..n) |_| try writer.writeByte(' ');
 }
 
 fn valueToYamlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {
@@ -2622,4 +2700,94 @@ test "resolve called twice does not duplicate keys" {
         if (std.mem.eql(u8, k, "path")) count += 1;
     }
     try testing.expectEqual(@as(usize, 1), count);
+}
+
+// yaml builtin tests
+
+test "yaml: record to yaml text" {
+    const doc =
+        \\---
+        \\title: Hello
+        \\draft: true
+        \\count: 42
+        \\---
+        \\body
+        \\
+    ;
+    const out = testRender("frontmatter | yaml", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "title: Hello") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "draft: true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "count: 42") != null);
+}
+
+test "yaml: string to record" {
+    const yaml_text = "title: Parsed\nauthor: Alice\n";
+    // Wrap in a document so we can pipe it
+    const doc =
+        \\---
+        \\content: placeholder
+        \\---
+        \\body
+        \\
+    ;
+    // Use a pipeline that produces the yaml string then parses it
+    _ = doc;
+    // Directly test yaml parsing via eval: use a literal wouldn't work,
+    // so test via codeblock extraction
+    const code_doc = "```yaml\ntitle: Parsed\nauthor: Alice\n```\n";
+    const val = testEval(
+        "codeblocks | first | .content | yaml",
+        code_doc,
+    ).?;
+    _ = yaml_text;
+    try testing.expect(val == .record);
+    try testing.expectEqualStrings("Parsed", val.record.get("title").?.string);
+    try testing.expectEqualStrings("Alice", val.record.get("author").?.string);
+}
+
+test "yaml: record with array fields" {
+    const doc =
+        \\---
+        \\tags:
+        \\  - alpha
+        \\  - beta
+        \\---
+        \\body
+        \\
+    ;
+    const out = testRender("frontmatter | yaml", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "tags:") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- alpha") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- beta") != null);
+}
+
+test "yaml: record with nested record" {
+    const doc =
+        \\---
+        \\author:
+        \\  name: Alice
+        \\  email: alice@example.com
+        \\---
+        \\body
+        \\
+    ;
+    const out = testRender("frontmatter | yaml", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "author:") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "  name: Alice") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "  email: alice@example.com") != null);
+}
+
+test "yaml: roundtrip record -> yaml -> record" {
+    const doc =
+        \\---
+        \\title: Roundtrip
+        \\draft: false
+        \\---
+        \\body
+        \\
+    ;
+    const val = testEval("frontmatter | yaml | yaml", doc).?;
+    try testing.expect(val == .record);
+    try testing.expectEqualStrings("Roundtrip", val.record.get("title").?.string);
+    try testing.expectEqual(false, val.record.get("draft").?.bool);
 }

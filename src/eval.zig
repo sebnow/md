@@ -491,15 +491,20 @@ pub const Evaluator = struct {
         // Render value to string for YAML
         const val_str = valueToYamlScalar(self.arena, set_val) orelse return null;
 
+        // Use piped document string if available, otherwise self.content
+        const doc = if (input) |inp| switch (inp) {
+            .string => |s| s,
+            else => self.content,
+        } else self.content;
+
         // Apply mutation using existing editFields
         const ops = self.arena.alloc(md.frontmatter.FieldOp, 1) catch return null;
         ops[0] = .{ .set = .{ .key = field_name, .value = val_str } };
-        const result = md.frontmatter.editFields(self.arena, self.content, ops) catch return null;
+        const result = md.frontmatter.editFields(self.arena, doc, ops) catch return null;
         return .{ .string = result };
     }
 
     fn evalDel(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
-        _ = input;
         if (fc.args.len != 1) {
             self.setError("del() requires exactly one argument: field", 0);
             return null;
@@ -510,9 +515,15 @@ pub const Evaluator = struct {
             return null;
         };
 
+        // Use piped document string if available, otherwise self.content
+        const doc = if (input) |inp| switch (inp) {
+            .string => |s| s,
+            else => self.content,
+        } else self.content;
+
         const ops = self.arena.alloc(md.frontmatter.FieldOp, 1) catch return null;
         ops[0] = .{ .delete = field_name };
-        const result = md.frontmatter.editFields(self.arena, self.content, ops) catch return null;
+        const result = md.frontmatter.editFields(self.arena, doc, ops) catch return null;
         return .{ .string = result };
     }
 
@@ -2223,7 +2234,7 @@ test "del removes field" {
     try testing.expect(std.mem.indexOf(u8, val.string, "title: Hello") != null);
 }
 
-test "chained set" {
+test "chained set applies both mutations" {
     const doc =
         \\---
         \\title: Old
@@ -2231,16 +2242,26 @@ test "chained set" {
         \\body
         \\
     ;
-    // Chained set: first set produces modified doc string,
-    // but the second set needs the document, not the string.
-    // This tests the pipeline: frontmatter | set(.title, "A") produces doc,
-    // then we can't pipe that to another set directly (it's a string, not a record).
-    // The DSL example shows: frontmatter | set(.title, "New") | set(.draft, false)
-    // This requires set to operate on the *document* not the frontmatter record.
-    // Let's test single set for now.
-    const val = testEval("frontmatter | set(.title, \"New\")", doc).?;
+    const val = testEval("frontmatter | set(.title, \"New\") | set(.draft, false)", doc).?;
     try testing.expect(val == .string);
     try testing.expect(std.mem.indexOf(u8, val.string, "title: New") != null);
+    try testing.expect(std.mem.indexOf(u8, val.string, "draft: false") != null);
+    try testing.expect(std.mem.indexOf(u8, val.string, "body") != null);
+}
+
+test "chained set and del" {
+    const doc =
+        \\---
+        \\title: Hello
+        \\draft: true
+        \\---
+        \\body
+        \\
+    ;
+    const val = testEval("frontmatter | set(.title, \"Updated\") | del(.draft)", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "title: Updated") != null);
+    try testing.expect(std.mem.indexOf(u8, val.string, "draft") == null);
 }
 
 // Section tests

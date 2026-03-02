@@ -9,6 +9,8 @@ pub const value = @import("value.zig");
 pub const lexer = @import("lexer.zig");
 pub const parser = @import("parser.zig");
 pub const eval = @import("eval.zig");
+pub const comments = @import("comments.zig");
+pub const footnotes = @import("footnotes.zig");
 
 test {
     std.testing.refAllDecls(@This());

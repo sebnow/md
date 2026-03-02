@@ -91,17 +91,9 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
     var arg_iter = std.process.args();
     _ = arg_iter.skip(); // program name
 
-    const first = arg_iter.next() orelse {
-        out.writeErr(usage);
-        return error.MissingArgument;
-    };
+    var args: Args = .{ .program = undefined };
+    var found_program = false;
 
-    if (std.mem.eql(u8, first, "--help") or std.mem.eql(u8, first, "-h")) {
-        try out.write(usage);
-        return;
-    }
-
-    var args: Args = .{ .program = first };
     while (arg_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--json")) {
             args.json = true;
@@ -114,9 +106,17 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
             return;
         } else if (arg.len > 0 and arg[0] == '-') {
             // ignore unknown flags
+        } else if (!found_program) {
+            args.program = arg;
+            found_program = true;
         } else if (args.file == null) {
             args.file = arg;
         }
+    }
+
+    if (!found_program) {
+        out.writeErr(usage);
+        return error.MissingArgument;
     }
 
     // Parse DSL program

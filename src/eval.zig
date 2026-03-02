@@ -864,14 +864,7 @@ pub const Evaluator = struct {
 
         const file_exists = self.checkLinkExists(target_str, kind_str);
 
-        const new_keys = self.arena.alloc([]const u8, rec.keys.len + 1) catch return null;
-        const new_vals = self.arena.alloc(Value, rec.values.len + 1) catch return null;
-        @memcpy(new_keys[0..rec.keys.len], rec.keys);
-        @memcpy(new_vals[0..rec.values.len], rec.values);
-        new_keys[rec.keys.len] = "exists";
-        new_vals[rec.values.len] = .{ .bool = file_exists };
-
-        return .{ .record = .{ .keys = new_keys, .values = new_vals } };
+        return self.recordSetField(rec, "exists", .{ .bool = file_exists });
     }
 
     fn checkLinkExists(self: *Evaluator, target: []const u8, kind: ?[]const u8) bool {
@@ -956,13 +949,29 @@ pub const Evaluator = struct {
 
         const resolved = self.resolveLinkPath(target_str, kind_str);
 
+        return self.recordSetField(rec, "path", .{ .string = resolved });
+    }
+
+    /// Set or replace a field on a record. If the key already exists, its
+    /// value is updated in place. Otherwise a new key-value pair is appended.
+    fn recordSetField(self: *Evaluator, rec: Value.Record, key: []const u8, val: Value) ?Value {
+        // Check for existing key
+        for (rec.keys, 0..) |k, idx| {
+            if (std.mem.eql(u8, k, key)) {
+                const new_vals = self.arena.alloc(Value, rec.values.len) catch return null;
+                @memcpy(new_vals, rec.values);
+                new_vals[idx] = val;
+                return .{ .record = .{ .keys = rec.keys, .values = new_vals } };
+            }
+        }
+
+        // Append new field
         const new_keys = self.arena.alloc([]const u8, rec.keys.len + 1) catch return null;
         const new_vals = self.arena.alloc(Value, rec.values.len + 1) catch return null;
         @memcpy(new_keys[0..rec.keys.len], rec.keys);
         @memcpy(new_vals[0..rec.values.len], rec.values);
-        new_keys[rec.keys.len] = "path";
-        new_vals[rec.values.len] = .{ .string = resolved };
-
+        new_keys[rec.keys.len] = key;
+        new_vals[rec.values.len] = val;
         return .{ .record = .{ .keys = new_keys, .values = new_vals } };
     }
 
@@ -2566,4 +2575,43 @@ test "resolve on unresolvable link returns original target" {
     try testing.expect(val == .array);
     try testing.expectEqual(@as(usize, 1), val.array.len);
     try testing.expectEqualStrings("nonexistent", val.array[0].record.get("path").?.string);
+}
+
+test "exists called twice does not duplicate keys" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "target.md", "# Target\n");
+
+    const doc = "See [[target]].\n";
+    const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
+    const val = testEvalWithPaths("links | exists | exists", doc, fp, tmp.path).?;
+    try testing.expect(val == .array);
+    const rec = val.array[0].record;
+    // Count occurrences of "exists" key — should be exactly 1
+    var count: usize = 0;
+    for (rec.keys) |k| {
+        if (std.mem.eql(u8, k, "exists")) count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "resolve called twice does not duplicate keys" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "target.md", "# Target\n");
+
+    const doc = "See [[target]].\n";
+    const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
+    const val = testEvalWithPaths("links | resolve | resolve", doc, fp, tmp.path).?;
+    try testing.expect(val == .array);
+    const rec = val.array[0].record;
+    var count: usize = 0;
+    for (rec.keys) |k| {
+        if (std.mem.eql(u8, k, "path")) count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
 }

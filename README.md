@@ -181,7 +181,7 @@ md 'links | resolve' --dir ./vault/ notes.md
 The comma operator produces multiple values from the same input.
 
 ```sh
-md 'frontmatter | .title, .draft' notes.md
+md 'frontmatter | (.title, .draft)' notes.md
 ```
 
 ## JSON Output

@@ -105,7 +105,10 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
             try out.write(usage);
             return;
         } else if (arg.len > 0 and arg[0] == '-') {
-            // ignore unknown flags
+            out.writeErr("md: unknown option: ");
+            out.writeErr(arg);
+            out.writeErr("\n");
+            return error.MissingArgument;
         } else if (!found_program) {
             args.program = arg;
             found_program = true;

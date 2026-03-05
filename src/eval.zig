@@ -1194,11 +1194,11 @@ fn scanIncoming(
         if (entry.kind != .file) continue;
         if (!isMarkdownFile(entry.basename)) continue;
 
-        const source_path = try std.fs.path.join(arena, &.{ dir_path, entry.path });
-        if (std.mem.eql(u8, source_path, target_path)) continue;
-
         defer _ = scratch.reset(.retain_capacity);
         const scratch_alloc = scratch.allocator();
+
+        const source_path = std.fs.path.join(scratch_alloc, &.{ dir_path, entry.path }) catch continue;
+        if (std.mem.eql(u8, source_path, target_path)) continue;
 
         const file = dir.openFile(entry.path, .{}) catch continue;
         defer file.close();
@@ -1207,8 +1207,9 @@ fn scanIncoming(
         const links = md.links.parse(scratch_alloc, content) catch continue;
         for (links) |link| {
             if (linkMatchesTarget(scratch_alloc, link, target_path, target_basename, source_path)) {
+                const source = try arena.dupe(u8, source_path);
                 const val = recordFromPairs(arena, &.{
-                    .{ "source", .{ .string = source_path } },
+                    .{ "source", .{ .string = source } },
                     .{ "kind", .{ .string = @tagName(link.kind) } },
                     .{ "line", .{ .int = @intCast(link.line) } },
                 }) orelse continue;

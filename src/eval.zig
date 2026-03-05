@@ -1147,7 +1147,10 @@ pub const Evaluator = struct {
 
     fn setErrorFmt(self: *Evaluator, comptime fmt: []const u8, args: anytype) void {
         if (self.err == null) {
-            const message = std.fmt.allocPrint(self.arena, fmt, args) catch @panic("out of memory");
+            const message = std.fmt.allocPrint(self.arena, fmt, args) catch {
+                self.err = .{ .message = "out of memory", .pos = 0 };
+                return;
+            };
             self.err = .{ .message = message, .pos = 0 };
         }
     }

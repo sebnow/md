@@ -398,13 +398,29 @@ pub const Evaluator = struct {
             else => return inp,
         };
 
-        const sorted = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
-        @memcpy(sorted, arr);
-
         const key_expr = fc.args[0];
-        const ctx = SortContext{ .evaluator = self, .key_expr = key_expr };
-        std.mem.sort(Value, sorted, ctx, SortContext.lessThan);
 
+        // Schwartzian transform: pre-compute keys once (O(n)) instead of
+        // re-evaluating per comparison (O(n log n)).
+        const KeyVal = struct { key: Value, val: Value };
+        const pairs = self.arena.alloc(KeyVal, arr.len) catch @panic("out of memory");
+        for (arr, 0..) |item, idx| {
+            pairs[idx] = .{
+                .key = self.evalWithInput(key_expr, item) orelse .null,
+                .val = item,
+            };
+        }
+
+        std.mem.sort(KeyVal, pairs, {}, struct {
+            fn lessThan(_: void, a: KeyVal, b: KeyVal) bool {
+                return if (compareValues(a.key, b.key)) |o| o == .lt else false;
+            }
+        }.lessThan);
+
+        const sorted = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
+        for (pairs, 0..) |p, idx| {
+            sorted[idx] = p.val;
+        }
         return .{ .array = sorted };
     }
 
@@ -1551,16 +1567,6 @@ fn valueToYamlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {
     };
 }
 
-const SortContext = struct {
-    evaluator: *Evaluator,
-    key_expr: *const Node,
-
-    fn lessThan(ctx: SortContext, a: Value, b: Value) bool {
-        const a_key = ctx.evaluator.evalWithInput(ctx.key_expr, a) orelse .null;
-        const b_key = ctx.evaluator.evalWithInput(ctx.key_expr, b) orelse .null;
-        return if (compareValues(a_key, b_key)) |o| o == .lt else false;
-    }
-};
 
 // Value comparison for ordering.
 // Returns null for incomparable types (mismatched tags, arrays, records, null).

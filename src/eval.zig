@@ -1740,7 +1740,6 @@ fn recordFromPairs(arena: std.mem.Allocator, pairs: []const KV) Value {
 }
 
 // YAML frontmatter → Value.Record parser
-// Adapted from frontmatter.toJson but produces Value directly.
 
 pub fn parseFrontmatterToValue(arena: std.mem.Allocator, raw: []const u8) ?Value {
     var keys = std.ArrayListUnmanaged([]const u8).empty;

@@ -11,6 +11,7 @@ pub const Node = union(enum) {
     binary: Binary,
     unary: Unary,
     comma: Comma,
+    array_lit: []const *const Node,
 
     pub const Pipeline = struct {
         stages: []const *const Node,
@@ -48,6 +49,7 @@ pub const Node = union(enum) {
         gte,
         op_and,
         op_or,
+        add_assign,
     };
 
     pub const Unary = struct {
@@ -200,6 +202,7 @@ pub const Parser = struct {
             .gt => .gt,
             .lte => .lte,
             .gte => .gte,
+            .plus_eq => .add_assign,
             else => return left,
         };
 
@@ -258,6 +261,7 @@ pub const Parser = struct {
             .kw_false => return self.parseBoolLiteral(false),
             .kw_null => return self.parseNullLiteral(),
             .lparen => return self.parseGroup(),
+            .lbracket => return self.parseArrayLit(),
             .err => {
                 self.setError("unexpected character", self.current.pos);
                 return null;
@@ -397,6 +401,39 @@ pub const Parser = struct {
         }
         self.advance();
         return inner;
+    }
+
+    // '[' (pipeline (',' pipeline)*)? ']'
+    fn parseArrayLit(self: *Parser) ?*const Node {
+        if (self.depth >= max_depth) {
+            self.setError("expression nested too deeply", self.current.pos);
+            return null;
+        }
+        self.depth += 1;
+        defer self.depth -= 1;
+        self.advance(); // skip '['
+
+        var elements = std.ArrayListUnmanaged(*const Node).empty;
+        if (self.current.kind != .rbracket) {
+            const first = self.parsePipeline() orelse return null;
+            elements.append(self.arena, first) catch @panic("out of memory");
+
+            while (self.current.kind == .comma) {
+                self.advance();
+                const elem = self.parsePipeline() orelse return null;
+                elements.append(self.arena, elem) catch @panic("out of memory");
+            }
+        }
+
+        if (self.current.kind != .rbracket) {
+            self.setError("expected ']'", self.current.pos);
+            return null;
+        }
+        self.advance();
+
+        const node = self.arena.create(Node) catch @panic("out of memory");
+        node.* = .{ .array_lit = elements.toOwnedSlice(self.arena) catch @panic("out of memory") };
+        return node;
     }
 
     fn advance(self: *Parser) void {
@@ -732,6 +769,49 @@ test "error: deeply nested not" {
 test "error: deeply nested parens" {
     const err = testParseErr("(" ** 300 ++ ".x" ++ ")" ** 300);
     try testing.expectEqualStrings("expression nested too deeply", err.message);
+}
+
+test "array literal empty" {
+    const node = testParse("[]").?;
+    try testing.expect(node.* == .array_lit);
+    try testing.expectEqual(@as(usize, 0), node.array_lit.len);
+}
+
+test "array literal with strings" {
+    const node = testParse("[\"a\", \"b\"]").?;
+    try testing.expect(node.* == .array_lit);
+    try testing.expectEqual(@as(usize, 2), node.array_lit.len);
+    try testing.expect(node.array_lit[0].* == .literal);
+    try testing.expectEqualStrings("a", node.array_lit[0].literal.string);
+    try testing.expectEqualStrings("b", node.array_lit[1].literal.string);
+}
+
+test "array literal single element" {
+    const node = testParse("[\"x\"]").?;
+    try testing.expect(node.* == .array_lit);
+    try testing.expectEqual(@as(usize, 1), node.array_lit.len);
+}
+
+test "add assign operator" {
+    const node = testParse(".tags += [\"foo\"]").?;
+    try testing.expect(node.* == .binary);
+    try testing.expectEqual(Node.BinaryOp.add_assign, node.binary.op);
+    try testing.expect(node.binary.left.* == .field_access);
+    try testing.expect(node.binary.right.* == .array_lit);
+}
+
+test "add assign in pipeline" {
+    const node = testParse("frontmatter | .tags += [\"a\", \"b\"]").?;
+    try testing.expect(node.* == .pipeline);
+    try testing.expectEqual(@as(usize, 2), node.pipeline.stages.len);
+    const assign = node.pipeline.stages[1];
+    try testing.expect(assign.* == .binary);
+    try testing.expectEqual(Node.BinaryOp.add_assign, assign.binary.op);
+}
+
+test "error: missing closing bracket" {
+    const err = testParseErr("[\"a\", \"b\"");
+    try testing.expectEqualStrings("expected ']'", err.message);
 }
 
 test "function call with pipeline arg" {

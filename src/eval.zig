@@ -45,6 +45,7 @@ pub const Evaluator = struct {
             .binary => |bin| self.evalBinary(bin, null),
             .unary => |un| self.evalUnary(un, null),
             .comma => |c| self.evalComma(c),
+            .array_lit => |elements| self.evalArrayLit(elements, null),
         };
     }
 
@@ -57,6 +58,7 @@ pub const Evaluator = struct {
             .binary => |bin| self.evalBinary(bin, input),
             .unary => |un| self.evalUnary(un, input),
             .comma => |c| self.evalCommaWithInput(c, input),
+            .array_lit => |elements| self.evalArrayLit(elements, input),
         };
     }
 
@@ -1087,6 +1089,8 @@ pub const Evaluator = struct {
     }
 
     fn evalBinary(self: *Evaluator, bin: Node.Binary, input: ?Value) ?Value {
+        if (bin.op == .add_assign) return self.evalAddAssign(bin, input);
+
         const left = if (input) |inp|
             self.evalWithInput(bin.left, inp)
         else
@@ -1108,7 +1112,118 @@ pub const Evaluator = struct {
             .gte => .{ .bool = if (compareValues(left_val, right_val)) |o| o == .gt or o == .eq else false },
             .op_and => .{ .bool = isTruthy(left_val) and isTruthy(right_val) },
             .op_or => .{ .bool = isTruthy(left_val) or isTruthy(right_val) },
+            .add_assign => unreachable,
         };
+    }
+
+    fn evalAddAssign(self: *Evaluator, bin: Node.Binary, input: ?Value) ?Value {
+        const field_name = self.extractFieldName(bin.left) orelse {
+            self.setError("+= left side must be a field access (.field)", 0);
+            return null;
+        };
+
+        // Evaluate right side (must be an array)
+        const right_val = if (input) |inp|
+            self.evalWithInput(bin.right, inp)
+        else
+            self.eval(bin.right);
+        const new_items = right_val orelse return null;
+
+        const new_arr = switch (new_items) {
+            .array => |a| a,
+            else => {
+                self.setError("+= right side must be an array", 0);
+                return null;
+            },
+        };
+
+        // Get document string
+        const doc = if (input) |inp| switch (inp) {
+            .string => |s| s,
+            else => self.content,
+        } else self.content;
+
+        // Extract and parse frontmatter
+        const fm = md.frontmatter.extract(doc) orelse {
+            // No frontmatter — create one with the field set to the array
+            return self.buildDocWithFrontmatter(doc, field_name, new_arr, .yaml, null);
+        };
+
+        const record = switch (fm.format) {
+            .yaml => parseFrontmatterToValue(self.arena, fm.raw),
+            .toml => parseTomlToValue(self.arena, fm.raw),
+        } orelse return null;
+
+        const rec = switch (record) {
+            .record => |r| r,
+            else => return null,
+        };
+
+        // Look up existing field
+        const existing = rec.get(field_name);
+        const result_arr = if (existing) |ex| switch (ex) {
+            .array => |old| blk: {
+                // Concatenate
+                const combined = self.arena.alloc(Value, old.len + new_arr.len) catch @panic("out of memory");
+                @memcpy(combined[0..old.len], old);
+                @memcpy(combined[old.len..], new_arr);
+                break :blk combined;
+            },
+            .null => new_arr,
+            else => {
+                self.setErrorFmt("+= field '{s}' is not an array", .{field_name});
+                return null;
+            },
+        } else new_arr;
+
+        return self.buildDocWithFrontmatter(doc, field_name, result_arr, fm.format, fm);
+    }
+
+    fn buildDocWithFrontmatter(
+        self: *Evaluator,
+        doc: []const u8,
+        field_name: []const u8,
+        arr: []const Value,
+        format: md.frontmatter.Format,
+        maybe_fm: ?md.frontmatter.Frontmatter,
+    ) ?Value {
+        // Parse existing frontmatter record (or start with empty)
+        var rec: Value.Record = if (maybe_fm) |fm| blk: {
+            const parsed = switch (fm.format) {
+                .yaml => parseFrontmatterToValue(self.arena, fm.raw),
+                .toml => parseTomlToValue(self.arena, fm.raw),
+            } orelse return null;
+            break :blk switch (parsed) {
+                .record => |r| r,
+                else => return null,
+            };
+        } else .{ .keys = &.{}, .values = &.{} };
+
+        // Build new record with the modified field
+        const new_val: Value = .{ .array = arr };
+        const updated = self.recordSetField(rec, field_name, new_val) orelse return null;
+        rec = updated.record;
+
+        // Render frontmatter
+        var buf = std.ArrayListUnmanaged(u8).empty;
+        switch (format) {
+            .yaml => renderRecordAsYaml(self.arena, &buf, rec, 0) catch @panic("out of memory"),
+            .toml => renderRecordAsToml(self.arena, &buf, rec) catch @panic("out of memory"),
+        }
+        const rendered = buf.toOwnedSlice(self.arena) catch @panic("out of memory");
+
+        // Reconstruct document
+        const delim: []const u8 = if (format == .toml) "+++" else "---";
+        const body = if (maybe_fm) |fm| fm.body else doc;
+
+        var result = std.ArrayListUnmanaged(u8).empty;
+        result.appendSlice(self.arena, delim) catch @panic("out of memory");
+        result.appendSlice(self.arena, "\n") catch @panic("out of memory");
+        result.appendSlice(self.arena, rendered) catch @panic("out of memory");
+        result.appendSlice(self.arena, delim) catch @panic("out of memory");
+        result.appendSlice(self.arena, "\n") catch @panic("out of memory");
+        result.appendSlice(self.arena, body) catch @panic("out of memory");
+        return .{ .string = result.toOwnedSlice(self.arena) catch @panic("out of memory") };
     }
 
     fn evalUnary(self: *Evaluator, un: Node.Unary, input: ?Value) ?Value {
@@ -1135,6 +1250,18 @@ pub const Evaluator = struct {
         const items = self.arena.alloc(Value, c.exprs.len) catch @panic("out of memory");
         for (c.exprs, 0..) |expr, idx| {
             items[idx] = self.evalWithInput(expr, input) orelse return null;
+        }
+        return .{ .array = items };
+    }
+
+    fn evalArrayLit(self: *Evaluator, elements: []const *const Node, input: ?Value) ?Value {
+        const items = self.arena.alloc(Value, elements.len) catch @panic("out of memory");
+        for (elements, 0..) |elem, idx| {
+            const val = if (input) |inp|
+                self.evalWithInput(elem, inp)
+            else
+                self.eval(elem);
+            items[idx] = val orelse return null;
         }
         return .{ .array = items };
     }
@@ -3240,4 +3367,150 @@ test "toml: frontmatter from toml document" {
     try testing.expect(val == .record);
     try testing.expectEqualStrings("TOML Doc", val.record.get("title").?.string);
     try testing.expectEqual(true, val.record.get("draft").?.bool);
+}
+
+// += operator tests
+
+test "+= append to existing block sequence" {
+    const doc =
+        \\---
+        \\tags:
+        \\  - a
+        \\  - b
+        \\---
+        \\Hello
+        \\
+    ;
+    const out = testRender("frontmatter | .tags += [\"c\"]", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "- a") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- b") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- c") != null);
+    // Body preserved
+    try testing.expect(std.mem.indexOf(u8, out, "Hello") != null);
+}
+
+test "+= create field when absent" {
+    const doc =
+        \\---
+        \\title: Hello
+        \\---
+        \\Body
+        \\
+    ;
+    const out = testRender("frontmatter | .tags += [\"new\"]", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "title:") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- new") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Body") != null);
+}
+
+test "+= append to inline array" {
+    const doc =
+        \\---
+        \\tags: [a, b]
+        \\---
+        \\Body
+        \\
+    ;
+    const out = testRender("frontmatter | .tags += [\"c\"]", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "- a") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- b") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- c") != null);
+}
+
+test "+= preserves other fields" {
+    const doc =
+        \\---
+        \\title: Keep
+        \\draft: true
+        \\tags:
+        \\  - x
+        \\---
+        \\Body
+        \\
+    ;
+    const out = testRender("frontmatter | .tags += [\"y\"]", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "title:") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "draft:") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- x") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- y") != null);
+}
+
+test "+= error when field is not an array" {
+    const doc =
+        \\---
+        \\title: Hello
+        \\---
+        \\Body
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+    var p = Parser.init(alloc, "frontmatter | .title += [\"x\"]");
+    const node = p.parse().?;
+    var evaluator = Evaluator.init(alloc, doc);
+    const result = evaluator.eval(node);
+    try testing.expect(result == null);
+    try testing.expect(evaluator.err != null);
+    try testing.expect(std.mem.indexOf(u8, evaluator.err.?.message, "not an array") != null);
+}
+
+test "+= with TOML frontmatter" {
+    const doc = "+++\ntitle = \"Hello\"\ntags = [\"a\"]\n+++\nBody\n";
+    const out = testRender("frontmatter | .tags += [\"b\"]", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "+++") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "title") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Body") != null);
+}
+
+test "+= chaining" {
+    const doc =
+        \\---
+        \\tags:
+        \\  - a
+        \\---
+        \\Body
+        \\
+    ;
+    const out = testRender("frontmatter | .tags += [\"b\"] | .tags += [\"c\"]", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "- a") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- b") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- c") != null);
+}
+
+test "+= creates frontmatter when none exists" {
+    const doc = "# Just a heading\n";
+    const out = testRender("frontmatter | .tags += [\"new\"]", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "---") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- new") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "# Just a heading") != null);
+}
+
+test "+= with multiple items" {
+    const doc =
+        \\---
+        \\tags:
+        \\  - a
+        \\---
+        \\Body
+        \\
+    ;
+    const out = testRender("frontmatter | .tags += [\"b\", \"c\"]", doc).?;
+    try testing.expect(std.mem.indexOf(u8, out, "- a") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- b") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- c") != null);
+}
+
+test "array literal evaluates to array" {
+    const val = testEval("[\"a\", \"b\", \"c\"]", "").?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 3), val.array.len);
+    try testing.expectEqualStrings("a", val.array[0].string);
+    try testing.expectEqualStrings("b", val.array[1].string);
+    try testing.expectEqualStrings("c", val.array[2].string);
+}
+
+test "empty array literal" {
+    const val = testEval("[]", "").?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 0), val.array.len);
 }

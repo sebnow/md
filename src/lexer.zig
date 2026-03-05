@@ -28,12 +28,16 @@ pub const Token = struct {
         gt, // >
         lt, // <
 
+        plus_eq, // +=
+
         // Punctuation
         pipe, // |
         dot, // .
         comma, // ,
         lparen, // (
         rparen, // )
+        lbracket, // [
+        rbracket, // ]
 
         // Special
         err,
@@ -106,6 +110,13 @@ pub const Lexer = struct {
             ',' => return self.single(.comma),
             '(' => return self.single(.lparen),
             ')' => return self.single(.rparen),
+            '[' => return self.single(.lbracket),
+            ']' => return self.single(.rbracket),
+            '+' => {
+                if (self.peek(1) == '=') return self.advance(.plus_eq, 2);
+                self.pos += 1;
+                return .{ .kind = .err, .text = self.source[start..self.pos], .pos = start };
+            },
             '=' => {
                 if (self.peek(1) == '=') return self.advance(.eq, 2);
                 self.pos += 1;
@@ -426,6 +437,23 @@ test "unknown character produces error" {
     try testing.expectEqual(Token.Kind.err, tok.kind);
     try testing.expectEqualStrings("@", tok.text);
     try testing.expectEqual(@as(usize, 0), tok.pos);
+}
+
+test "plus equals operator" {
+    try expectTokens("+=", &.{.plus_eq});
+}
+
+test "bare plus is error" {
+    var lex = Lexer.init("+");
+    try testing.expectEqual(Token.Kind.err, lex.next().kind);
+}
+
+test "brackets" {
+    try expectTokens("[\"a\", \"b\"]", &.{ .lbracket, .string, .comma, .string, .rbracket });
+}
+
+test "plus equals with array" {
+    try expectTokens(".tags += [\"foo\"]", &.{ .dot, .identifier, .plus_eq, .lbracket, .string, .rbracket });
 }
 
 test "bare equals is error" {

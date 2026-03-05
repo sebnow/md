@@ -100,7 +100,10 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
         } else if (std.mem.eql(u8, arg, "-i")) {
             args.in_place = true;
         } else if (std.mem.eql(u8, arg, "--dir")) {
-            args.dir = arg_iter.next();
+            args.dir = arg_iter.next() orelse {
+                out.writeErr("md: --dir requires a value\n");
+                return error.MissingArgument;
+            };
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try out.write(usage);
             return;

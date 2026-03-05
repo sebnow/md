@@ -217,6 +217,7 @@ fn printError(out: *Output, err: anyerror) void {
     const msg: []const u8 = switch (err) {
         error.FileNotFound => "file not found",
         error.AccessDenied => "access denied",
+        error.StreamTooLong => "file too large (maximum 64 MiB)",
         error.MissingArgument => "missing argument, use --help for usage",
         error.ParseError, error.EvalError => return, // already printed
         else => @errorName(err),

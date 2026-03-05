@@ -33,7 +33,7 @@ Each stage receives the output of the previous stage.
 Extractors pull structured data from the document:
 .Bl -tag -width "frontmatter" -compact
 .It Ic frontmatter
-YAML frontmatter as a record.
+YAML or TOML frontmatter as a record.
 .It Ic body
 Document body without frontmatter.
 .It Ic headings
@@ -96,6 +96,13 @@ Group into a record keyed by field value.
 List record keys.
 .It Ic has(name)
 Check if a field exists.
+.El
+.Ss Format Conversion
+.Bl -tag -width "yaml" -compact
+.It Ic yaml
+Record to YAML text, or YAML text to record.
+.It Ic toml
+Record to TOML text, or TOML text to record.
 .El
 .Ss Mutation
 .Bl -tag -width "replace(text)" -compact
@@ -190,6 +197,9 @@ Image and embed links:
 .It
 YAML frontmatter (delimited by
 .Li --- )
+.It
+TOML frontmatter (delimited by
+.Li +++ )
 .It
 ATX headings
 .Pq Li "# H1"

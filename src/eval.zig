@@ -1181,8 +1181,11 @@ fn scanIncoming(
     target_path: []const u8,
     target_basename: []const u8,
     results: *std.ArrayListUnmanaged(Value),
-) !void {
-    var walker = try dir.walk(arena);
+) std.mem.Allocator.Error!void {
+    var walker = dir.walk(arena) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return,
+    };
     defer walker.deinit();
 
     // Per-file allocator that resets after each file to avoid accumulating
@@ -1190,7 +1193,8 @@ fn scanIncoming(
     var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer scratch.deinit();
 
-    while (try walker.next()) |entry| {
+    while (true) {
+        const entry = walker.next() catch continue orelse break;
         if (entry.kind != .file) continue;
         if (!isMarkdownFile(entry.basename)) continue;
 

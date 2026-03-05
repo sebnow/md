@@ -75,6 +75,9 @@ pub const Parser = struct {
     prev_end: usize,
     arena: std.mem.Allocator,
     err: ?ParseError,
+    depth: u16 = 0,
+
+    const max_depth = 256;
 
     pub fn init(arena: std.mem.Allocator, source: []const u8) Parser {
         var lex = Lexer.init(source);
@@ -171,6 +174,12 @@ pub const Parser = struct {
     // not_expr = 'not' not_expr | comparison
     fn parseNot(self: *Parser) ?*const Node {
         if (self.current.kind == .kw_not) {
+            if (self.depth >= max_depth) {
+                self.setError("expression nested too deeply", self.current.pos);
+                return null;
+            }
+            self.depth += 1;
+            defer self.depth -= 1;
             self.advance();
             const operand = self.parseNot() orelse return null;
             const node = self.arena.create(Node) catch @panic("out of memory");
@@ -373,6 +382,12 @@ pub const Parser = struct {
     }
 
     fn parseGroup(self: *Parser) ?*const Node {
+        if (self.depth >= max_depth) {
+            self.setError("expression nested too deeply", self.current.pos);
+            return null;
+        }
+        self.depth += 1;
+        defer self.depth -= 1;
         self.advance(); // skip '('
         const inner = self.parseComma() orelse return null;
         if (self.current.kind != .rparen) {
@@ -675,6 +690,17 @@ test "error: formatError produces diagnostic" {
 test "error: unknown character" {
     const err = testParseErr("@");
     try testing.expectEqualStrings("unexpected character", err.message);
+}
+
+test "error: deeply nested not" {
+    // 300 levels of "not " exceeds max_depth (256)
+    const err = testParseErr("not " ** 300 ++ ".x");
+    try testing.expectEqualStrings("expression nested too deeply", err.message);
+}
+
+test "error: deeply nested parens" {
+    const err = testParseErr("(" ** 300 ++ ".x" ++ ")" ** 300);
+    try testing.expectEqualStrings("expression nested too deeply", err.message);
 }
 
 test "function call with pipeline arg" {

@@ -506,23 +506,28 @@ pub const Evaluator = struct {
             self.eval(fc.args[1]);
         const set_val = val orelse return null;
 
-        // Render value to string for YAML
-        const val_str = valueToYamlScalar(self.arena, set_val) orelse {
-            if (set_val == .array or set_val == .record) {
-                self.setError("set() value must be a scalar (string, number, bool, or null)", 0);
-            }
-            return null;
-        };
-
         // Use piped document string if available, otherwise self.content
         const doc = if (input) |inp| switch (inp) {
             .string => |s| s,
             else => self.content,
         } else self.content;
 
+        // Detect format from existing frontmatter to choose scalar renderer
+        const is_toml = if (md.frontmatter.extract(doc)) |fm| fm.format == .toml else false;
+        const val_str = if (is_toml)
+            valueToTomlScalar(self.arena, set_val)
+        else
+            valueToYamlScalar(self.arena, set_val);
+        const rendered = val_str orelse {
+            if (set_val == .array or set_val == .record) {
+                self.setError("set() value must be a scalar (string, number, bool, or null)", 0);
+            }
+            return null;
+        };
+
         // Apply mutation using existing editFields
         const ops = self.arena.alloc(md.frontmatter.FieldOp, 1) catch @panic("out of memory");
-        ops[0] = .{ .set = .{ .key = field_name, .value = val_str } };
+        ops[0] = .{ .set = .{ .key = field_name, .value = rendered } };
         const result = md.frontmatter.editFields(self.arena, doc, ops) catch @panic("out of memory");
         return .{ .string = result };
     }
@@ -1574,6 +1579,31 @@ fn valueToYamlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {
     };
 }
 
+fn valueToTomlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {
+    return switch (val) {
+        .string => |s| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            buf.append(arena, '"') catch @panic("out of memory");
+            writeTomlEscaped(buf.writer(arena), s) catch @panic("out of memory");
+            buf.append(arena, '"') catch @panic("out of memory");
+            break :blk buf.toOwnedSlice(arena) catch null;
+        },
+        .int => |n| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            buf.writer(arena).print("{d}", .{n}) catch @panic("out of memory");
+            break :blk buf.toOwnedSlice(arena) catch null;
+        },
+        .float => |f| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            buf.writer(arena).print("{d}", .{f}) catch @panic("out of memory");
+            break :blk buf.toOwnedSlice(arena) catch null;
+        },
+        .bool => |b| if (b) "true" else "false",
+        .null => @as(?[]const u8, "\"\""),
+        else => null,
+    };
+}
+
 
 // Value comparison for ordering.
 // Returns null for incomparable types (mismatched tags, arrays, records, null).
@@ -2609,6 +2639,29 @@ test "chained set and del" {
     try testing.expect(val == .string);
     try testing.expect(std.mem.indexOf(u8, val.string, "title: Updated") != null);
     try testing.expect(std.mem.indexOf(u8, val.string, "draft") == null);
+}
+
+test "set on TOML frontmatter uses TOML syntax" {
+    const doc = "+++\ntitle = \"test\"\n+++\nBody\n";
+    const val = testEval("frontmatter | set(.title, \"new\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "title = \"new\"") != null);
+    // Verify it keeps +++ delimiters
+    try testing.expect(std.mem.startsWith(u8, val.string, "+++"));
+}
+
+test "set on TOML frontmatter quotes strings" {
+    const doc = "+++\ndraft = true\n+++\nBody\n";
+    const val = testEval("frontmatter | set(.title, \"hello\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "title = \"hello\"") != null);
+}
+
+test "set on TOML frontmatter passes ints unquoted" {
+    const doc = "+++\ntitle = \"x\"\n+++\nBody\n";
+    const val = testEval("frontmatter | set(.count, 42)", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "count = 42") != null);
 }
 
 // Section tests

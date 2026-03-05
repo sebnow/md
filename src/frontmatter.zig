@@ -80,13 +80,18 @@ pub const FieldOp = union(enum) {
     delete: []const u8,
 };
 
-/// Apply a sequence of set/delete operations to YAML frontmatter.
-/// If no frontmatter exists and there are set operations, one is created.
+/// Apply a sequence of set/delete operations to frontmatter.
+/// Detects YAML vs TOML from the existing delimiters and uses the
+/// appropriate key-value syntax. If no frontmatter exists and there
+/// are set operations, YAML frontmatter is created by default.
 /// Returns a newly allocated string with the modified content.
 pub fn editFields(allocator: std.mem.Allocator, content: []const u8, ops: []const FieldOp) std.mem.Allocator.Error![]const u8 {
     var result: std.ArrayListUnmanaged(u8) = .empty;
 
     if (extract(content)) |fm| {
+        const sep: []const u8 = if (fm.format == .toml) " = " else ": ";
+        const is_toml = fm.format == .toml;
+
         const opening_end = @intFromPtr(fm.raw.ptr) - @intFromPtr(content.ptr);
         try result.appendSlice(allocator, content[0..opening_end]);
 
@@ -107,9 +112,13 @@ pub fn editFields(allocator: std.mem.Allocator, content: []const u8, ops: []cons
             for (ops, 0..) |op, i| {
                 switch (op) {
                     .set => |s| {
-                        if (matchesKey(fm.raw[line_start..], s.key)) {
+                        const matches = if (is_toml)
+                            matchesKeyToml(fm.raw[line_start..], s.key)
+                        else
+                            matchesKey(fm.raw[line_start..], s.key);
+                        if (matches) {
                             try result.appendSlice(allocator, s.key);
-                            try result.appendSlice(allocator, ": ");
+                            try result.appendSlice(allocator, sep);
                             try result.appendSlice(allocator, s.value);
                             try result.appendSlice(allocator, "\n");
                             applied[i] = true;
@@ -118,7 +127,11 @@ pub fn editFields(allocator: std.mem.Allocator, content: []const u8, ops: []cons
                         }
                     },
                     .delete => |key| {
-                        if (matchesKey(fm.raw[line_start..], key)) {
+                        const matches = if (is_toml)
+                            matchesKeyToml(fm.raw[line_start..], key)
+                        else
+                            matchesKey(fm.raw[line_start..], key);
+                        if (matches) {
                             deleted = true;
                             break;
                         }
@@ -137,7 +150,7 @@ pub fn editFields(allocator: std.mem.Allocator, content: []const u8, ops: []cons
                 .set => |s| {
                     if (!applied[i]) {
                         try result.appendSlice(allocator, s.key);
-                        try result.appendSlice(allocator, ": ");
+                        try result.appendSlice(allocator, sep);
                         try result.appendSlice(allocator, s.value);
                         try result.appendSlice(allocator, "\n");
                     }
@@ -149,7 +162,7 @@ pub fn editFields(allocator: std.mem.Allocator, content: []const u8, ops: []cons
         const body_with_delimiter = content[opening_end + fm.raw.len ..];
         try result.appendSlice(allocator, body_with_delimiter);
     } else {
-        // No frontmatter — create one if there are set ops
+        // No frontmatter — create YAML by default if there are set ops
         var has_sets = false;
         for (ops) |op| {
             if (op == .set) {
@@ -191,11 +204,20 @@ pub fn deleteField(allocator: std.mem.Allocator, content: []const u8, key: []con
     return editFields(allocator, content, &.{.{ .delete = key }});
 }
 
-/// Check if a line starts with "key:" (with optional whitespace after colon).
+/// Check if a YAML line starts with "key:".
 fn matchesKey(line: []const u8, key: []const u8) bool {
     if (line.len < key.len + 1) return false;
     if (!std.mem.eql(u8, line[0..key.len], key)) return false;
     return line[key.len] == ':';
+}
+
+/// Check if a TOML line starts with "key" followed by optional whitespace and "=".
+fn matchesKeyToml(line: []const u8, key: []const u8) bool {
+    if (line.len < key.len + 1) return false;
+    if (!std.mem.eql(u8, line[0..key.len], key)) return false;
+    var i = key.len;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    return i < line.len and line[i] == '=';
 }
 
 /// Convert raw YAML frontmatter to JSON.
@@ -716,6 +738,35 @@ test "editFields: delete only on no frontmatter is noop" {
     });
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings(input, result);
+}
+
+// TOML editFields tests
+
+test "editFields: TOML set replaces existing key" {
+    const input = "+++\ntitle = \"Old\"\ndraft = true\n+++\nBody\n";
+    const result = try editFields(std.testing.allocator, input, &.{
+        .{ .set = .{ .key = "title", .value = "\"New\"" } },
+    });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("+++\ntitle = \"New\"\ndraft = true\n+++\nBody\n", result);
+}
+
+test "editFields: TOML set adds new key" {
+    const input = "+++\ntitle = \"Hello\"\n+++\nBody\n";
+    const result = try editFields(std.testing.allocator, input, &.{
+        .{ .set = .{ .key = "draft", .value = "true" } },
+    });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("+++\ntitle = \"Hello\"\ndraft = true\n+++\nBody\n", result);
+}
+
+test "editFields: TOML delete key" {
+    const input = "+++\ntitle = \"Hello\"\ndraft = true\n+++\nBody\n";
+    const result = try editFields(std.testing.allocator, input, &.{
+        .{ .delete = "draft" },
+    });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("+++\ntitle = \"Hello\"\n+++\nBody\n", result);
 }
 
 // toJson tests

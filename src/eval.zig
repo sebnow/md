@@ -862,6 +862,8 @@ pub const Evaluator = struct {
         var dir = std.fs.cwd().openDir(scan_dir_path, .{ .iterate = true }) catch |err| {
             if (err == error.FileNotFound) {
                 self.setError("incoming: directory not found", 0);
+            } else {
+                self.setError("incoming: cannot open directory", 0);
             }
             return null;
         };

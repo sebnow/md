@@ -1497,7 +1497,7 @@ fn parseTomlValue(arena: std.mem.Allocator, text: []const u8) Value {
 
     // Quoted string
     if (text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"') {
-        return .{ .string = text[1 .. text.len - 1] };
+        return .{ .string = unescapeString(arena, text[1 .. text.len - 1]) };
     }
     if (text.len >= 2 and text[0] == '\'' and text[text.len - 1] == '\'') {
         return .{ .string = text[1 .. text.len - 1] };
@@ -1537,7 +1537,13 @@ fn parseTomlArray(arena: std.mem.Allocator, inner: []const u8) Value {
             const quote = inner[pos];
             const start = pos;
             pos += 1;
-            while (pos < inner.len and inner[pos] != quote) : (pos += 1) {}
+            while (pos < inner.len and inner[pos] != quote) {
+                if (inner[pos] == '\\' and pos + 1 < inner.len) {
+                    pos += 2;
+                    continue;
+                }
+                pos += 1;
+            }
             if (pos < inner.len) pos += 1; // skip closing quote
             items.append(arena, parseTomlValue(arena, inner[start..pos])) catch
                 return .{ .array = &.{} };
@@ -1604,6 +1610,36 @@ fn valueToTomlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {
     };
 }
 
+
+fn unescapeString(allocator: std.mem.Allocator, content: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, content, '\\') == null) return content;
+
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    var i: usize = 0;
+    while (i < content.len) {
+        if (content[i] == '\\' and i + 1 < content.len) {
+            const next = content[i + 1];
+            const replacement: u8 = switch (next) {
+                '"' => '"',
+                '\\' => '\\',
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                else => {
+                    buf.append(allocator, content[i]) catch @panic("out of memory");
+                    i += 1;
+                    continue;
+                },
+            };
+            buf.append(allocator, replacement) catch @panic("out of memory");
+            i += 2;
+        } else {
+            buf.append(allocator, content[i]) catch @panic("out of memory");
+            i += 1;
+        }
+    }
+    return buf.toOwnedSlice(allocator) catch @panic("out of memory");
+}
 
 // Value comparison for ordering.
 // Returns null for incomparable types (mismatched tags, arrays, records, null).
@@ -1849,9 +1885,10 @@ fn parseScalarValue(arena: std.mem.Allocator, text: []const u8) Value {
 
     // Quoted string — strip quotes
     if (text.len >= 2) {
-        if ((text[0] == '"' and text[text.len - 1] == '"') or
-            (text[0] == '\'' and text[text.len - 1] == '\''))
-        {
+        if (text[0] == '"' and text[text.len - 1] == '"') {
+            return .{ .string = unescapeString(arena, text[1 .. text.len - 1]) };
+        }
+        if (text[0] == '\'' and text[text.len - 1] == '\'') {
             return .{ .string = text[1 .. text.len - 1] };
         }
     }

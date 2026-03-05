@@ -340,8 +340,9 @@ pub const Parser = struct {
         // Strip quotes
         const content = if (raw.len >= 2) raw[1 .. raw.len - 1] else "";
         self.advance();
+        const unescaped = unescapeString(self.arena, content);
         const node = self.arena.create(Node) catch @panic("out of memory");
-        node.* = .{ .literal = .{ .string = content } };
+        node.* = .{ .literal = .{ .string = unescaped } };
         return node;
     }
 
@@ -420,6 +421,36 @@ pub const Parser = struct {
         return lexer_mod.formatErrorWithPrefix(self.lexer.source, e.pos, e.message, prefix_len, buf);
     }
 };
+
+fn unescapeString(arena: std.mem.Allocator, content: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, content, '\\') == null) return content;
+
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    var i: usize = 0;
+    while (i < content.len) {
+        if (content[i] == '\\' and i + 1 < content.len) {
+            const next = content[i + 1];
+            const replacement: u8 = switch (next) {
+                '"' => '"',
+                '\\' => '\\',
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                else => {
+                    buf.append(arena, content[i]) catch @panic("out of memory");
+                    i += 1;
+                    continue;
+                },
+            };
+            buf.append(arena, replacement) catch @panic("out of memory");
+            i += 2;
+        } else {
+            buf.append(arena, content[i]) catch @panic("out of memory");
+            i += 1;
+        }
+    }
+    return buf.toOwnedSlice(arena) catch @panic("out of memory");
+}
 
 // Tests
 

@@ -507,7 +507,12 @@ pub const Evaluator = struct {
         const set_val = val orelse return null;
 
         // Render value to string for YAML
-        const val_str = valueToYamlScalar(self.arena, set_val) orelse return null;
+        const val_str = valueToYamlScalar(self.arena, set_val) orelse {
+            if (set_val == .array or set_val == .record) {
+                self.setError("set() value must be a scalar (string, number, bool, or null)", 0);
+            }
+            return null;
+        };
 
         // Use piped document string if available, otherwise self.content
         const doc = if (input) |inp| switch (inp) {

@@ -596,21 +596,16 @@ pub const Evaluator = struct {
             },
         };
 
-        // Use pointer arithmetic to find exact position when section_text
-        // is a slice of self.content (from section()). Falls back to
-        // substring search for other cases.
-        const pos = sliceOffset(self.content, section_text) orelse
-            std.mem.indexOf(u8, self.content, section_text);
+        const pos = sliceOffset(self.content, section_text) orelse {
+            self.setError("replace: section is not a direct slice of the document", 0);
+            return null;
+        };
 
-        if (pos) |p| {
-            var result = std.ArrayListUnmanaged(u8).empty;
-            result.appendSlice(self.arena, self.content[0..p]) catch @panic("out of memory");
-            result.appendSlice(self.arena, replacement) catch @panic("out of memory");
-            result.appendSlice(self.arena, self.content[p + section_text.len ..]) catch @panic("out of memory");
-            return .{ .string = result.toOwnedSlice(self.arena) catch @panic("out of memory") };
-        }
-
-        return .{ .string = self.content };
+        var result = std.ArrayListUnmanaged(u8).empty;
+        result.appendSlice(self.arena, self.content[0..pos]) catch @panic("out of memory");
+        result.appendSlice(self.arena, replacement) catch @panic("out of memory");
+        result.appendSlice(self.arena, self.content[pos + section_text.len ..]) catch @panic("out of memory");
+        return .{ .string = result.toOwnedSlice(self.arena) catch @panic("out of memory") };
     }
 
     fn evalAppend(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
@@ -640,19 +635,17 @@ pub const Evaluator = struct {
             },
         };
 
-        const pos = sliceOffset(self.content, section_text) orelse
-            std.mem.indexOf(u8, self.content, section_text);
+        const pos = sliceOffset(self.content, section_text) orelse {
+            self.setError("append: section is not a direct slice of the document", 0);
+            return null;
+        };
 
-        if (pos) |p| {
-            const insert_pos = p + section_text.len;
-            var result = std.ArrayListUnmanaged(u8).empty;
-            result.appendSlice(self.arena, self.content[0..insert_pos]) catch @panic("out of memory");
-            result.appendSlice(self.arena, append_text) catch @panic("out of memory");
-            result.appendSlice(self.arena, self.content[insert_pos..]) catch @panic("out of memory");
-            return .{ .string = result.toOwnedSlice(self.arena) catch @panic("out of memory") };
-        }
-
-        return .{ .string = self.content };
+        const insert_pos = pos + section_text.len;
+        var result = std.ArrayListUnmanaged(u8).empty;
+        result.appendSlice(self.arena, self.content[0..insert_pos]) catch @panic("out of memory");
+        result.appendSlice(self.arena, append_text) catch @panic("out of memory");
+        result.appendSlice(self.arena, self.content[insert_pos..]) catch @panic("out of memory");
+        return .{ .string = result.toOwnedSlice(self.arena) catch @panic("out of memory") };
     }
 
     fn evalKeys(self: *Evaluator, input: ?Value) ?Value {

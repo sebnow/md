@@ -239,10 +239,10 @@ pub const Evaluator = struct {
                 for (arr) |item| {
                     const pred_val = self.evalWithInput(predicate, item) orelse continue;
                     if (isTruthy(pred_val)) {
-                        results.append(self.arena, item) catch return null;
+                        results.append(self.arena, item) catch @panic("out of memory");
                     }
                 }
-                const slice = results.toOwnedSlice(self.arena) catch return null;
+                const slice = results.toOwnedSlice(self.arena) catch @panic("out of memory");
                 return .{ .array = slice };
             },
             else => {
@@ -340,10 +340,10 @@ pub const Evaluator = struct {
                 }
             }
             if (!found) {
-                results.append(self.arena, item) catch return null;
+                results.append(self.arena, item) catch @panic("out of memory");
             }
         }
-        const slice = results.toOwnedSlice(self.arena) catch return null;
+        const slice = results.toOwnedSlice(self.arena) catch @panic("out of memory");
         return .{ .array = slice };
     }
 
@@ -353,7 +353,7 @@ pub const Evaluator = struct {
             else => return input,
         };
 
-        const reversed = self.arena.alloc(Value, arr.len) catch return null;
+        const reversed = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
         for (arr, 0..) |item, idx| {
             reversed[arr.len - 1 - idx] = item;
         }
@@ -377,7 +377,7 @@ pub const Evaluator = struct {
             },
         };
 
-        const results = self.arena.alloc(Value, arr.len) catch return null;
+        const results = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
         for (arr, 0..) |item, idx| {
             results[idx] = self.evalWithInput(fc.args[0], item) orelse .null;
         }
@@ -398,7 +398,7 @@ pub const Evaluator = struct {
             else => return inp,
         };
 
-        const sorted = self.arena.alloc(Value, arr.len) catch return null;
+        const sorted = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
         @memcpy(sorted, arr);
 
         const key_expr = fc.args[0];
@@ -440,18 +440,18 @@ pub const Evaluator = struct {
             }
 
             if (found_idx) |idx| {
-                group_items.items[idx].append(self.arena, item) catch return null;
+                group_items.items[idx].append(self.arena, item) catch @panic("out of memory");
             } else {
-                group_keys.append(self.arena, key_val) catch return null;
+                group_keys.append(self.arena, key_val) catch @panic("out of memory");
                 var new_list = std.ArrayListUnmanaged(Value).empty;
-                new_list.append(self.arena, item) catch return null;
-                group_items.append(self.arena, new_list) catch return null;
+                new_list.append(self.arena, item) catch @panic("out of memory");
+                group_items.append(self.arena, new_list) catch @panic("out of memory");
             }
         }
 
         // Build result: record with key → array
-        const keys = self.arena.alloc([]const u8, group_keys.items.len) catch return null;
-        const vals = self.arena.alloc(Value, group_keys.items.len) catch return null;
+        const keys = self.arena.alloc([]const u8, group_keys.items.len) catch @panic("out of memory");
+        const vals = self.arena.alloc(Value, group_keys.items.len) catch @panic("out of memory");
 
         for (group_keys.items, 0..) |key_val, idx| {
             // Convert key to string for record key
@@ -464,7 +464,7 @@ pub const Evaluator = struct {
                 },
             };
             var items_list = group_items.items[idx];
-            const slice = items_list.toOwnedSlice(self.arena) catch return null;
+            const slice = items_list.toOwnedSlice(self.arena) catch @panic("out of memory");
             vals[idx] = .{ .array = slice };
         }
 
@@ -500,9 +500,9 @@ pub const Evaluator = struct {
         } else self.content;
 
         // Apply mutation using existing editFields
-        const ops = self.arena.alloc(md.frontmatter.FieldOp, 1) catch return null;
+        const ops = self.arena.alloc(md.frontmatter.FieldOp, 1) catch @panic("out of memory");
         ops[0] = .{ .set = .{ .key = field_name, .value = val_str } };
-        const result = md.frontmatter.editFields(self.arena, doc, ops) catch return null;
+        const result = md.frontmatter.editFields(self.arena, doc, ops) catch @panic("out of memory");
         return .{ .string = result };
     }
 
@@ -523,9 +523,9 @@ pub const Evaluator = struct {
             else => self.content,
         } else self.content;
 
-        const ops = self.arena.alloc(md.frontmatter.FieldOp, 1) catch return null;
+        const ops = self.arena.alloc(md.frontmatter.FieldOp, 1) catch @panic("out of memory");
         ops[0] = .{ .delete = field_name };
-        const result = md.frontmatter.editFields(self.arena, doc, ops) catch return null;
+        const result = md.frontmatter.editFields(self.arena, doc, ops) catch @panic("out of memory");
         return .{ .string = result };
     }
 
@@ -545,7 +545,7 @@ pub const Evaluator = struct {
             },
         };
 
-        const parsed_headings = md.headings.parse(self.arena, self.content) catch return null;
+        const parsed_headings = md.headings.parse(self.arena, self.content) catch @panic("out of memory");
 
         for (parsed_headings, 0..) |h, idx| {
             if (!matchesHeading(h, pattern)) continue;
@@ -604,10 +604,10 @@ pub const Evaluator = struct {
 
         if (pos) |p| {
             var result = std.ArrayListUnmanaged(u8).empty;
-            result.appendSlice(self.arena, self.content[0..p]) catch return null;
-            result.appendSlice(self.arena, replacement) catch return null;
-            result.appendSlice(self.arena, self.content[p + section_text.len ..]) catch return null;
-            return .{ .string = result.toOwnedSlice(self.arena) catch return null };
+            result.appendSlice(self.arena, self.content[0..p]) catch @panic("out of memory");
+            result.appendSlice(self.arena, replacement) catch @panic("out of memory");
+            result.appendSlice(self.arena, self.content[p + section_text.len ..]) catch @panic("out of memory");
+            return .{ .string = result.toOwnedSlice(self.arena) catch @panic("out of memory") };
         }
 
         return .{ .string = self.content };
@@ -646,10 +646,10 @@ pub const Evaluator = struct {
         if (pos) |p| {
             const insert_pos = p + section_text.len;
             var result = std.ArrayListUnmanaged(u8).empty;
-            result.appendSlice(self.arena, self.content[0..insert_pos]) catch return null;
-            result.appendSlice(self.arena, append_text) catch return null;
-            result.appendSlice(self.arena, self.content[insert_pos..]) catch return null;
-            return .{ .string = result.toOwnedSlice(self.arena) catch return null };
+            result.appendSlice(self.arena, self.content[0..insert_pos]) catch @panic("out of memory");
+            result.appendSlice(self.arena, append_text) catch @panic("out of memory");
+            result.appendSlice(self.arena, self.content[insert_pos..]) catch @panic("out of memory");
+            return .{ .string = result.toOwnedSlice(self.arena) catch @panic("out of memory") };
         }
 
         return .{ .string = self.content };
@@ -662,7 +662,7 @@ pub const Evaluator = struct {
         };
         switch (inp) {
             .record => |rec| {
-                const items = self.arena.alloc(Value, rec.keys.len) catch return null;
+                const items = self.arena.alloc(Value, rec.keys.len) catch @panic("out of memory");
                 for (rec.keys, 0..) |key, idx| {
                     items[idx] = .{ .string = key };
                 }
@@ -704,8 +704,8 @@ pub const Evaluator = struct {
         switch (input) {
             .record => |rec| {
                 var buf = std.ArrayListUnmanaged(u8).empty;
-                renderRecordAsYaml(self.arena, &buf, rec, 0) catch return null;
-                return .{ .string = buf.toOwnedSlice(self.arena) catch return null };
+                renderRecordAsYaml(self.arena, &buf, rec, 0) catch @panic("out of memory");
+                return .{ .string = buf.toOwnedSlice(self.arena) catch @panic("out of memory") };
             },
             .string => |s| {
                 return parseFrontmatterToValue(self.arena, s);
@@ -724,8 +724,8 @@ pub const Evaluator = struct {
         switch (input) {
             .record => |rec| {
                 var buf = std.ArrayListUnmanaged(u8).empty;
-                renderRecordAsToml(self.arena, &buf, rec) catch return null;
-                return .{ .string = buf.toOwnedSlice(self.arena) catch return null };
+                renderRecordAsToml(self.arena, &buf, rec) catch @panic("out of memory");
+                return .{ .string = buf.toOwnedSlice(self.arena) catch @panic("out of memory") };
             },
             .string => |s| {
                 return parseTomlToValue(self.arena, s);
@@ -764,37 +764,37 @@ pub const Evaluator = struct {
     }
 
     fn extractHeadingsFrom(self: *Evaluator, content: []const u8) ?Value {
-        const parsed = md.headings.parse(self.arena, content) catch return null;
-        const items = self.arena.alloc(Value, parsed.len) catch return null;
+        const parsed = md.headings.parse(self.arena, content) catch @panic("out of memory");
+        const items = self.arena.alloc(Value, parsed.len) catch @panic("out of memory");
         for (parsed, 0..) |h, idx| {
-            items[idx] = headingToValue(self.arena, h) catch return null;
+            items[idx] = headingToValue(self.arena, h);
         }
         return .{ .array = items };
     }
 
     fn extractLinksFrom(self: *Evaluator, content: []const u8) ?Value {
-        const parsed = md.links.parse(self.arena, content) catch return null;
-        const items = self.arena.alloc(Value, parsed.len) catch return null;
+        const parsed = md.links.parse(self.arena, content) catch @panic("out of memory");
+        const items = self.arena.alloc(Value, parsed.len) catch @panic("out of memory");
         for (parsed, 0..) |l, idx| {
-            items[idx] = linkToValue(self.arena, l) catch return null;
+            items[idx] = linkToValue(self.arena, l);
         }
         return .{ .array = items };
     }
 
     fn extractTagsFrom(self: *Evaluator, content: []const u8) ?Value {
-        const parsed = md.tags.parse(self.arena, content) catch return null;
-        const items = self.arena.alloc(Value, parsed.len) catch return null;
+        const parsed = md.tags.parse(self.arena, content) catch @panic("out of memory");
+        const items = self.arena.alloc(Value, parsed.len) catch @panic("out of memory");
         for (parsed, 0..) |t, idx| {
-            items[idx] = tagToValue(self.arena, t) catch return null;
+            items[idx] = tagToValue(self.arena, t);
         }
         return .{ .array = items };
     }
 
     fn extractCodeblocksFrom(self: *Evaluator, content: []const u8) ?Value {
-        const parsed = md.codeblocks.parse(self.arena, content) catch return null;
-        const items = self.arena.alloc(Value, parsed.len) catch return null;
+        const parsed = md.codeblocks.parse(self.arena, content) catch @panic("out of memory");
+        const items = self.arena.alloc(Value, parsed.len) catch @panic("out of memory");
         for (parsed, 0..) |b, idx| {
-            items[idx] = codeblockToValue(self.arena, b) catch return null;
+            items[idx] = codeblockToValue(self.arena, b);
         }
         return .{ .array = items };
     }
@@ -823,19 +823,19 @@ pub const Evaluator = struct {
     }
 
     fn extractCommentsFrom(self: *Evaluator, content: []const u8) ?Value {
-        const parsed = md.comments.parse(self.arena, content) catch return null;
-        const items = self.arena.alloc(Value, parsed.len) catch return null;
+        const parsed = md.comments.parse(self.arena, content) catch @panic("out of memory");
+        const items = self.arena.alloc(Value, parsed.len) catch @panic("out of memory");
         for (parsed, 0..) |c, idx| {
-            items[idx] = commentToValue(self.arena, c) catch return null;
+            items[idx] = commentToValue(self.arena, c);
         }
         return .{ .array = items };
     }
 
     fn extractFootnotesFrom(self: *Evaluator, content: []const u8) ?Value {
-        const parsed = md.footnotes.parse(self.arena, content) catch return null;
-        const items = self.arena.alloc(Value, parsed.len) catch return null;
+        const parsed = md.footnotes.parse(self.arena, content) catch @panic("out of memory");
+        const items = self.arena.alloc(Value, parsed.len) catch @panic("out of memory");
         for (parsed, 0..) |f, idx| {
-            items[idx] = footnoteToValue(self.arena, f) catch return null;
+            items[idx] = footnoteToValue(self.arena, f);
         }
         return .{ .array = items };
     }
@@ -859,14 +859,14 @@ pub const Evaluator = struct {
         defer dir.close();
 
         var results = std.ArrayListUnmanaged(Value).empty;
-        scanIncoming(self.arena, dir, scan_dir_path, file_path, target_basename, &results) catch return null;
-        return .{ .array = results.toOwnedSlice(self.arena) catch return null };
+        scanIncoming(self.arena, dir, scan_dir_path, file_path, target_basename, &results) catch @panic("out of memory");
+        return .{ .array = results.toOwnedSlice(self.arena) catch @panic("out of memory") };
     }
 
     fn evalExists(self: *Evaluator, input: Value) ?Value {
         switch (input) {
             .array => |arr| {
-                const items = self.arena.alloc(Value, arr.len) catch return null;
+                const items = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
                 for (arr, 0..) |item, idx| {
                     items[idx] = self.addExistsField(item) orelse return null;
                 }
@@ -951,7 +951,7 @@ pub const Evaluator = struct {
     fn evalResolve(self: *Evaluator, input: Value) ?Value {
         switch (input) {
             .array => |arr| {
-                const items = self.arena.alloc(Value, arr.len) catch return null;
+                const items = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
                 for (arr, 0..) |item, idx| {
                     items[idx] = self.addResolvedField(item) orelse return null;
                 }
@@ -1003,7 +1003,7 @@ pub const Evaluator = struct {
         // Check for existing key
         for (rec.keys, 0..) |k, idx| {
             if (std.mem.eql(u8, k, key)) {
-                const new_vals = self.arena.alloc(Value, rec.values.len) catch return null;
+                const new_vals = self.arena.alloc(Value, rec.values.len) catch @panic("out of memory");
                 @memcpy(new_vals, rec.values);
                 new_vals[idx] = val;
                 return .{ .record = .{ .keys = rec.keys, .values = new_vals } };
@@ -1011,8 +1011,8 @@ pub const Evaluator = struct {
         }
 
         // Append new field
-        const new_keys = self.arena.alloc([]const u8, rec.keys.len + 1) catch return null;
-        const new_vals = self.arena.alloc(Value, rec.values.len + 1) catch return null;
+        const new_keys = self.arena.alloc([]const u8, rec.keys.len + 1) catch @panic("out of memory");
+        const new_vals = self.arena.alloc(Value, rec.values.len + 1) catch @panic("out of memory");
         @memcpy(new_keys[0..rec.keys.len], rec.keys);
         @memcpy(new_vals[0..rec.values.len], rec.values);
         new_keys[rec.keys.len] = key;
@@ -1109,7 +1109,7 @@ pub const Evaluator = struct {
     }
 
     fn evalComma(self: *Evaluator, c: Node.Comma) ?Value {
-        const items = self.arena.alloc(Value, c.exprs.len) catch return null;
+        const items = self.arena.alloc(Value, c.exprs.len) catch @panic("out of memory");
         for (c.exprs, 0..) |expr, idx| {
             items[idx] = self.eval(expr) orelse return null;
         }
@@ -1117,7 +1117,7 @@ pub const Evaluator = struct {
     }
 
     fn evalCommaWithInput(self: *Evaluator, c: Node.Comma, input: Value) ?Value {
-        const items = self.arena.alloc(Value, c.exprs.len) catch return null;
+        const items = self.arena.alloc(Value, c.exprs.len) catch @panic("out of memory");
         for (c.exprs, 0..) |expr, idx| {
             items[idx] = self.evalWithInput(expr, input) orelse return null;
         }
@@ -1132,7 +1132,7 @@ pub const Evaluator = struct {
 
     fn setErrorFmt(self: *Evaluator, comptime fmt: []const u8, args: anytype) void {
         if (self.err == null) {
-            const message = std.fmt.allocPrint(self.arena, fmt, args) catch return;
+            const message = std.fmt.allocPrint(self.arena, fmt, args) catch @panic("out of memory");
             self.err = .{ .message = message, .pos = 0 };
         }
     }
@@ -1216,7 +1216,7 @@ fn scanIncoming(
                     .{ "source", .{ .string = source } },
                     .{ "kind", .{ .string = @tagName(link.kind) } },
                     .{ "line", .{ .int = @intCast(link.line) } },
-                }) orelse continue;
+                });
                 try results.append(arena, val);
             }
         }
@@ -1244,12 +1244,12 @@ fn linkMatchesTarget(
     const resolved = std.fs.path.resolve(
         arena,
         &.{ source_dir, link_target },
-    ) catch return false;
+    ) catch @panic("out of memory");
 
     const target_resolved = std.fs.path.resolve(
         arena,
         &.{target_path},
-    ) catch return false;
+    ) catch @panic("out of memory");
 
     return std.mem.eql(u8, resolved, target_resolved);
 }
@@ -1439,9 +1439,9 @@ pub fn parseTomlToValue(arena: std.mem.Allocator, raw: []const u8) ?Value {
 
             const tk = std.ArrayListUnmanaged([]const u8).empty;
             const tv = std.ArrayListUnmanaged(Value).empty;
-            table_keys_storage.append(arena, tk) catch return null;
-            table_vals_storage.append(arena, tv) catch return null;
-            table_names.append(arena, table_name) catch return null;
+            table_keys_storage.append(arena, tk) catch @panic("out of memory");
+            table_vals_storage.append(arena, tv) catch @panic("out of memory");
+            table_names.append(arena, table_name) catch @panic("out of memory");
 
             const last_idx = table_keys_storage.items.len - 1;
             current_keys = &table_keys_storage.items[last_idx];
@@ -1456,20 +1456,20 @@ pub fn parseTomlToValue(arena: std.mem.Allocator, raw: []const u8) ?Value {
         var val_text = std.mem.trimLeft(u8, trimmed[eq_pos + 1 ..], " \t");
         _ = &val_text;
 
-        current_keys.append(arena, key) catch return null;
-        current_vals.append(arena, parseTomlValue(arena, val_text)) catch return null;
+        current_keys.append(arena, key) catch @panic("out of memory");
+        current_vals.append(arena, parseTomlValue(arena, val_text)) catch @panic("out of memory");
     }
 
     // Merge table sections into top-level record
     for (table_names.items, 0..) |name, idx| {
-        const tk = table_keys_storage.items[idx].toOwnedSlice(arena) catch return null;
-        const tv = table_vals_storage.items[idx].toOwnedSlice(arena) catch return null;
-        keys.append(arena, name) catch return null;
-        vals.append(arena, .{ .record = .{ .keys = tk, .values = tv } }) catch return null;
+        const tk = table_keys_storage.items[idx].toOwnedSlice(arena) catch @panic("out of memory");
+        const tv = table_vals_storage.items[idx].toOwnedSlice(arena) catch @panic("out of memory");
+        keys.append(arena, name) catch @panic("out of memory");
+        vals.append(arena, .{ .record = .{ .keys = tk, .values = tv } }) catch @panic("out of memory");
     }
 
-    const k = keys.toOwnedSlice(arena) catch return null;
-    const v = vals.toOwnedSlice(arena) catch return null;
+    const k = keys.toOwnedSlice(arena) catch @panic("out of memory");
+    const v = vals.toOwnedSlice(arena) catch @panic("out of memory");
     return .{ .record = .{ .keys = k, .values = v } };
 }
 
@@ -1550,12 +1550,12 @@ fn valueToYamlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {
         .string => |s| s,
         .int => |n| blk: {
             var buf: std.ArrayListUnmanaged(u8) = .empty;
-            buf.writer(arena).print("{d}", .{n}) catch return null;
+            buf.writer(arena).print("{d}", .{n}) catch @panic("out of memory");
             break :blk buf.toOwnedSlice(arena) catch null;
         },
         .float => |f| blk: {
             var buf: std.ArrayListUnmanaged(u8) = .empty;
-            buf.writer(arena).print("{d}", .{f}) catch return null;
+            buf.writer(arena).print("{d}", .{f}) catch @panic("out of memory");
             break :blk buf.toOwnedSlice(arena) catch null;
         },
         .bool => |b| if (b) "true" else "false",
@@ -1608,60 +1608,60 @@ fn isTruthy(v: Value) bool {
 
 // Type conversion helpers
 
-fn headingToValue(arena: std.mem.Allocator, h: md.headings.Heading) std.mem.Allocator.Error!Value {
+fn headingToValue(arena: std.mem.Allocator, h: md.headings.Heading) Value {
     return recordFromPairs(arena, &.{
         .{ "depth", .{ .int = @intCast(h.depth) } },
         .{ "text", .{ .string = h.text } },
         .{ "line", .{ .int = @intCast(h.line) } },
-    }) orelse error.OutOfMemory;
+    });
 }
 
-fn linkToValue(arena: std.mem.Allocator, l: md.links.Link) std.mem.Allocator.Error!Value {
+fn linkToValue(arena: std.mem.Allocator, l: md.links.Link) Value {
     return recordFromPairs(arena, &.{
         .{ "kind", .{ .string = @tagName(l.kind) } },
         .{ "target", .{ .string = l.target } },
         .{ "text", .{ .string = l.text } },
         .{ "line", .{ .int = @intCast(l.line) } },
-    }) orelse error.OutOfMemory;
+    });
 }
 
-fn tagToValue(arena: std.mem.Allocator, t: md.tags.Tag) std.mem.Allocator.Error!Value {
+fn tagToValue(arena: std.mem.Allocator, t: md.tags.Tag) Value {
     return recordFromPairs(arena, &.{
         .{ "name", .{ .string = t.name } },
         .{ "line", .{ .int = @intCast(t.line) } },
-    }) orelse error.OutOfMemory;
+    });
 }
 
-fn codeblockToValue(arena: std.mem.Allocator, b: md.codeblocks.CodeBlock) std.mem.Allocator.Error!Value {
+fn codeblockToValue(arena: std.mem.Allocator, b: md.codeblocks.CodeBlock) Value {
     return recordFromPairs(arena, &.{
         .{ "language", .{ .string = b.language } },
         .{ "content", .{ .string = b.content } },
         .{ "start_line", .{ .int = @intCast(b.start_line) } },
         .{ "end_line", .{ .int = @intCast(b.end_line) } },
-    }) orelse error.OutOfMemory;
+    });
 }
 
-fn commentToValue(arena: std.mem.Allocator, c: md.comments.Comment) std.mem.Allocator.Error!Value {
+fn commentToValue(arena: std.mem.Allocator, c: md.comments.Comment) Value {
     return recordFromPairs(arena, &.{
         .{ "kind", .{ .string = @tagName(c.kind) } },
         .{ "text", .{ .string = c.text } },
         .{ "line", .{ .int = @intCast(c.line) } },
-    }) orelse error.OutOfMemory;
+    });
 }
 
-fn footnoteToValue(arena: std.mem.Allocator, f: md.footnotes.Footnote) std.mem.Allocator.Error!Value {
+fn footnoteToValue(arena: std.mem.Allocator, f: md.footnotes.Footnote) Value {
     return recordFromPairs(arena, &.{
         .{ "label", .{ .string = f.label } },
         .{ "text", .{ .string = f.text } },
         .{ "line", .{ .int = @intCast(f.line) } },
-    }) orelse error.OutOfMemory;
+    });
 }
 
 const KV = struct { []const u8, Value };
 
-fn recordFromPairs(arena: std.mem.Allocator, pairs: []const KV) ?Value {
-    const keys = arena.alloc([]const u8, pairs.len) catch return null;
-    const vals = arena.alloc(Value, pairs.len) catch return null;
+fn recordFromPairs(arena: std.mem.Allocator, pairs: []const KV) Value {
+    const keys = arena.alloc([]const u8, pairs.len) catch @panic("out of memory");
+    const vals = arena.alloc(Value, pairs.len) catch @panic("out of memory");
     for (pairs, 0..) |pair, idx| {
         keys[idx] = pair[0];
         vals[idx] = pair[1];
@@ -1694,20 +1694,20 @@ pub fn parseFrontmatterToValue(arena: std.mem.Allocator, raw: []const u8) ?Value
             val_text = val_text[1..];
         }
 
-        keys.append(arena, key) catch return null;
+        keys.append(arena, key) catch @panic("out of memory");
 
         if (val_text.len == 0) {
             // Block value: sequence or nested mapping
             const block_result = parseBlockValue(arena, raw, pos) orelse return null;
-            vals.append(arena, block_result.value) catch return null;
+            vals.append(arena, block_result.value) catch @panic("out of memory");
             pos = block_result.pos;
         } else {
-            vals.append(arena, parseScalarValue(arena, val_text)) catch return null;
+            vals.append(arena, parseScalarValue(arena, val_text)) catch @panic("out of memory");
         }
     }
 
-    const k = keys.toOwnedSlice(arena) catch return null;
-    const v = vals.toOwnedSlice(arena) catch return null;
+    const k = keys.toOwnedSlice(arena) catch @panic("out of memory");
+    const v = vals.toOwnedSlice(arena) catch @panic("out of memory");
     return .{ .record = .{ .keys = k, .values = v } };
 }
 
@@ -1755,11 +1755,11 @@ fn parseBlockSequence(arena: std.mem.Allocator, raw: []const u8, start_pos: usiz
             item_text = item_text[1..];
         }
 
-        items.append(arena, parseScalarValue(arena, item_text)) catch return null;
+        items.append(arena, parseScalarValue(arena, item_text)) catch @panic("out of memory");
         pos = next_pos;
     }
 
-    const slice = items.toOwnedSlice(arena) catch return null;
+    const slice = items.toOwnedSlice(arena) catch @panic("out of memory");
     return .{ .value = .{ .array = slice }, .pos = pos };
 }
 
@@ -1793,13 +1793,13 @@ fn parseNestedMapping(arena: std.mem.Allocator, raw: []const u8, start_pos: usiz
             val_text = val_text[1..];
         }
 
-        keys.append(arena, key) catch return null;
-        vals.append(arena, parseScalarValue(arena, val_text)) catch return null;
+        keys.append(arena, key) catch @panic("out of memory");
+        vals.append(arena, parseScalarValue(arena, val_text)) catch @panic("out of memory");
         pos = next_pos;
     }
 
-    const k = keys.toOwnedSlice(arena) catch return null;
-    const v = vals.toOwnedSlice(arena) catch return null;
+    const k = keys.toOwnedSlice(arena) catch @panic("out of memory");
+    const v = vals.toOwnedSlice(arena) catch @panic("out of memory");
     return .{
         .value = .{ .record = .{ .keys = k, .values = v } },
         .pos = pos,

@@ -105,16 +105,16 @@ pub const Parser = struct {
         if (self.current.kind != .comma) return first;
 
         var exprs = std.ArrayListUnmanaged(*const Node).empty;
-        exprs.append(self.arena, first) catch return null;
+        exprs.append(self.arena, first) catch @panic("out of memory");
 
         while (self.current.kind == .comma) {
             self.advance();
             const expr = self.parsePipeline() orelse return null;
-            exprs.append(self.arena, expr) catch return null;
+            exprs.append(self.arena, expr) catch @panic("out of memory");
         }
 
-        const node = self.arena.create(Node) catch return null;
-        node.* = .{ .comma = .{ .exprs = exprs.toOwnedSlice(self.arena) catch return null } };
+        const node = self.arena.create(Node) catch @panic("out of memory");
+        node.* = .{ .comma = .{ .exprs = exprs.toOwnedSlice(self.arena) catch @panic("out of memory") } };
         return node;
     }
 
@@ -125,16 +125,16 @@ pub const Parser = struct {
         if (self.current.kind != .pipe) return first;
 
         var stages = std.ArrayListUnmanaged(*const Node).empty;
-        stages.append(self.arena, first) catch return null;
+        stages.append(self.arena, first) catch @panic("out of memory");
 
         while (self.current.kind == .pipe) {
             self.advance();
             const stage = self.parseOr() orelse return null;
-            stages.append(self.arena, stage) catch return null;
+            stages.append(self.arena, stage) catch @panic("out of memory");
         }
 
-        const node = self.arena.create(Node) catch return null;
-        node.* = .{ .pipeline = .{ .stages = stages.toOwnedSlice(self.arena) catch return null } };
+        const node = self.arena.create(Node) catch @panic("out of memory");
+        node.* = .{ .pipeline = .{ .stages = stages.toOwnedSlice(self.arena) catch @panic("out of memory") } };
         return node;
     }
 
@@ -145,7 +145,7 @@ pub const Parser = struct {
         while (self.current.kind == .kw_or) {
             self.advance();
             const right = self.parseAnd() orelse return null;
-            const node = self.arena.create(Node) catch return null;
+            const node = self.arena.create(Node) catch @panic("out of memory");
             node.* = .{ .binary = .{ .op = .op_or, .left = left, .right = right } };
             left = node;
         }
@@ -160,7 +160,7 @@ pub const Parser = struct {
         while (self.current.kind == .kw_and) {
             self.advance();
             const right = self.parseNot() orelse return null;
-            const node = self.arena.create(Node) catch return null;
+            const node = self.arena.create(Node) catch @panic("out of memory");
             node.* = .{ .binary = .{ .op = .op_and, .left = left, .right = right } };
             left = node;
         }
@@ -173,7 +173,7 @@ pub const Parser = struct {
         if (self.current.kind == .kw_not) {
             self.advance();
             const operand = self.parseNot() orelse return null;
-            const node = self.arena.create(Node) catch return null;
+            const node = self.arena.create(Node) catch @panic("out of memory");
             node.* = .{ .unary = .{ .op = .op_not, .operand = operand } };
             return node;
         }
@@ -196,7 +196,7 @@ pub const Parser = struct {
 
         self.advance();
         const right = self.parsePostfix() orelse return null;
-        const node = self.arena.create(Node) catch return null;
+        const node = self.arena.create(Node) catch @panic("out of memory");
         node.* = .{ .binary = .{ .op = op, .left = left, .right = right } };
         return node;
     }
@@ -215,17 +215,17 @@ pub const Parser = struct {
             }
             // Wrap as a function-call-like field access on the result
             // This handles: expr.field (e.g., first.text)
-            const parts = self.arena.alloc([]const u8, 1) catch return null;
+            const parts = self.arena.alloc([]const u8, 1) catch @panic("out of memory");
             parts[0] = self.current.text;
             self.advance();
-            const access = self.arena.create(Node) catch return null;
+            const access = self.arena.create(Node) catch @panic("out of memory");
             access.* = .{ .field_access = .{ .parts = parts } };
 
             // Create a pipeline: result | .field
-            const stages = self.arena.alloc(*const Node, 2) catch return null;
+            const stages = self.arena.alloc(*const Node, 2) catch @panic("out of memory");
             stages[0] = result;
             stages[1] = access;
-            const pipe = self.arena.create(Node) catch return null;
+            const pipe = self.arena.create(Node) catch @panic("out of memory");
             pipe.* = .{ .pipeline = .{ .stages = stages } };
             result = pipe;
         }
@@ -274,7 +274,7 @@ pub const Parser = struct {
                 self.setError("expected field name after '.'", self.current.pos);
                 return null;
             }
-            parts.append(self.arena, self.current.text) catch return null;
+            parts.append(self.arena, self.current.text) catch @panic("out of memory");
             self.advance();
         }
 
@@ -283,8 +283,8 @@ pub const Parser = struct {
             return null;
         }
 
-        const node = self.arena.create(Node) catch return null;
-        node.* = .{ .field_access = .{ .parts = parts.toOwnedSlice(self.arena) catch return null } };
+        const node = self.arena.create(Node) catch @panic("out of memory");
+        node.* = .{ .field_access = .{ .parts = parts.toOwnedSlice(self.arena) catch @panic("out of memory") } };
         return node;
     }
 
@@ -295,7 +295,7 @@ pub const Parser = struct {
 
         if (self.current.kind != .lparen) {
             // Bare identifier (extractor like frontmatter, headings, etc.)
-            const node = self.arena.create(Node) catch return null;
+            const node = self.arena.create(Node) catch @panic("out of memory");
             node.* = .{ .fn_call = .{ .name = name, .args = &.{} } };
             return node;
         }
@@ -306,12 +306,12 @@ pub const Parser = struct {
         var args = std.ArrayListUnmanaged(*const Node).empty;
         if (self.current.kind != .rparen) {
             const first = self.parsePipeline() orelse return null;
-            args.append(self.arena, first) catch return null;
+            args.append(self.arena, first) catch @panic("out of memory");
 
             while (self.current.kind == .comma) {
                 self.advance();
                 const arg = self.parsePipeline() orelse return null;
-                args.append(self.arena, arg) catch return null;
+                args.append(self.arena, arg) catch @panic("out of memory");
             }
         }
 
@@ -321,8 +321,8 @@ pub const Parser = struct {
         }
         self.advance();
 
-        const node = self.arena.create(Node) catch return null;
-        node.* = .{ .fn_call = .{ .name = name, .args = args.toOwnedSlice(self.arena) catch return null } };
+        const node = self.arena.create(Node) catch @panic("out of memory");
+        node.* = .{ .fn_call = .{ .name = name, .args = args.toOwnedSlice(self.arena) catch @panic("out of memory") } };
         return node;
     }
 
@@ -331,7 +331,7 @@ pub const Parser = struct {
         // Strip quotes
         const content = if (raw.len >= 2) raw[1 .. raw.len - 1] else "";
         self.advance();
-        const node = self.arena.create(Node) catch return null;
+        const node = self.arena.create(Node) catch @panic("out of memory");
         node.* = .{ .literal = .{ .string = content } };
         return node;
     }
@@ -342,7 +342,7 @@ pub const Parser = struct {
             return null;
         };
         self.advance();
-        const node = self.arena.create(Node) catch return null;
+        const node = self.arena.create(Node) catch @panic("out of memory");
         node.* = .{ .literal = .{ .integer = n } };
         return node;
     }
@@ -353,21 +353,21 @@ pub const Parser = struct {
             return null;
         };
         self.advance();
-        const node = self.arena.create(Node) catch return null;
+        const node = self.arena.create(Node) catch @panic("out of memory");
         node.* = .{ .literal = .{ .float = f } };
         return node;
     }
 
     fn parseBoolLiteral(self: *Parser, val: bool) ?*const Node {
         self.advance();
-        const node = self.arena.create(Node) catch return null;
+        const node = self.arena.create(Node) catch @panic("out of memory");
         node.* = .{ .literal = .{ .bool = val } };
         return node;
     }
 
     fn parseNullLiteral(self: *Parser) ?*const Node {
         self.advance();
-        const node = self.arena.create(Node) catch return null;
+        const node = self.arena.create(Node) catch @panic("out of memory");
         node.* = .{ .literal = .null };
         return node;
     }

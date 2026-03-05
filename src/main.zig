@@ -165,9 +165,19 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
                 return error.EvalError;
             },
         };
-        const out_file = try std.fs.cwd().createFile(path, .{});
-        defer out_file.close();
-        try out_file.writeAll(output);
+        const cwd = std.fs.cwd();
+        const tmp_path = std.fmt.allocPrint(arena, "{s}.tmp", .{path}) catch return error.WriteFailed;
+        const tmp_file = try cwd.createFile(tmp_path, .{});
+        tmp_file.writeAll(output) catch |err| {
+            tmp_file.close();
+            cwd.deleteFile(tmp_path) catch {};
+            return err;
+        };
+        tmp_file.close();
+        cwd.rename(tmp_path, path) catch |err| {
+            cwd.deleteFile(tmp_path) catch {};
+            return err;
+        };
         return;
     }
 

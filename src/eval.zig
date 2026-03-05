@@ -1074,16 +1074,10 @@ pub const Evaluator = struct {
         return switch (bin.op) {
             .eq => .{ .bool = left_val.eql(right_val) },
             .neq => .{ .bool = !left_val.eql(right_val) },
-            .lt => .{ .bool = compareValues(left_val, right_val) == .lt },
-            .gt => .{ .bool = compareValues(left_val, right_val) == .gt },
-            .lte => blk: {
-                const ord = compareValues(left_val, right_val);
-                break :blk .{ .bool = ord == .lt or ord == .eq };
-            },
-            .gte => blk: {
-                const ord = compareValues(left_val, right_val);
-                break :blk .{ .bool = ord == .gt or ord == .eq };
-            },
+            .lt => .{ .bool = if (compareValues(left_val, right_val)) |o| o == .lt else false },
+            .gt => .{ .bool = if (compareValues(left_val, right_val)) |o| o == .gt else false },
+            .lte => .{ .bool = if (compareValues(left_val, right_val)) |o| o == .lt or o == .eq else false },
+            .gte => .{ .bool = if (compareValues(left_val, right_val)) |o| o == .gt or o == .eq else false },
             .op_and => .{ .bool = isTruthy(left_val) and isTruthy(right_val) },
             .op_or => .{ .bool = isTruthy(left_val) or isTruthy(right_val) },
         };
@@ -1564,15 +1558,16 @@ const SortContext = struct {
     fn lessThan(ctx: SortContext, a: Value, b: Value) bool {
         const a_key = ctx.evaluator.evalWithInput(ctx.key_expr, a) orelse .null;
         const b_key = ctx.evaluator.evalWithInput(ctx.key_expr, b) orelse .null;
-        return compareValues(a_key, b_key) == .lt;
+        return if (compareValues(a_key, b_key)) |o| o == .lt else false;
     }
 };
 
-// Value comparison for ordering
-fn compareValues(a: Value, b: Value) std.math.Order {
+// Value comparison for ordering.
+// Returns null for incomparable types (mismatched tags, arrays, records, null).
+fn compareValues(a: Value, b: Value) ?std.math.Order {
     const a_tag = std.meta.activeTag(a);
     const b_tag = std.meta.activeTag(b);
-    if (a_tag != b_tag) return .eq; // incomparable types
+    if (a_tag != b_tag) return null;
 
     return switch (a) {
         .int => |n| std.math.order(n, b.int),
@@ -1583,7 +1578,7 @@ fn compareValues(a: Value, b: Value) std.math.Order {
             const bi: u1 = @intFromBool(b.bool);
             return std.math.order(ai, bi);
         },
-        else => .eq,
+        else => null,
     };
 }
 

@@ -215,6 +215,7 @@ find vault/ -name '*.md' -exec sh -c 'echo "$(md "stats | .words" "$1") $1"' _ {
 - Obsidian wikilinks: `[[target]]`, `[[target|alias]]`
 - Image/embed links: `![alt](url)`, `![[embed]]`
 - YAML frontmatter (delimited by `---`)
+- TOML frontmatter (delimited by `+++`)
 - ATX headings (`# H1` through `###### H6`)
 - Fenced code blocks (backtick and tilde)
 - Indented code blocks (4+ spaces or tab)
@@ -225,7 +226,7 @@ find vault/ -name '*.md' -exec sh -c 'echo "$(md "stats | .words" "$1") $1"' _ {
 
 ## Building
 
-Requires Zig 0.15.
+Requires Zig 0.15.2.
 
 ```sh
 zig build

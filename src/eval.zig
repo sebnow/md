@@ -104,7 +104,7 @@ pub const Evaluator = struct {
         // Extractors: operate on document content, or piped string input
         if (fc.args.len == 0 and self.isExtractor(fc.name)) {
             if (input) |inp| {
-                // When piped a string (e.g. from section()), parse that instead
+                // When piped a string, parse that instead
                 if (inp == .string) {
                     return self.evalExtractorOnContent(fc.name, inp.string);
                 }
@@ -160,21 +160,6 @@ pub const Evaluator = struct {
         // del(.field): delete frontmatter field
         if (std.mem.eql(u8, fc.name, "del")) {
             return self.evalDel(fc, input);
-        }
-
-        // section("heading"): extract section content
-        if (std.mem.eql(u8, fc.name, "section")) {
-            return self.evalSection(fc);
-        }
-
-        // replace("text"): replace section/mutation content
-        if (std.mem.eql(u8, fc.name, "replace")) {
-            return self.evalReplace(fc, input);
-        }
-
-        // append("text"): append to section/mutation content
-        if (std.mem.eql(u8, fc.name, "append")) {
-            return self.evalAppend(fc, input);
         }
 
         // keys: list record keys
@@ -623,125 +608,6 @@ pub const Evaluator = struct {
         ops[0] = .{ .delete = field_name };
         const result = md.frontmatter.editFields(self.arena, doc, ops) catch @panic("out of memory");
         return .{ .string = result };
-    }
-
-    fn evalSection(self: *Evaluator, fc: Node.FnCall) ?Value {
-        if (fc.args.len != 1) {
-            self.setError("section() requires exactly one argument", 0);
-            return null;
-        }
-
-        // Evaluate argument to get heading pattern
-        const arg_val = self.eval(fc.args[0]) orelse return null;
-        const pattern = switch (arg_val) {
-            .string => |s| s,
-            else => {
-                self.setError("section() argument must be a string", 0);
-                return null;
-            },
-        };
-
-        const parsed_headings = md.headings.parse(self.arena, self.content) catch @panic("out of memory");
-
-        for (parsed_headings, 0..) |h, idx| {
-            if (!matchesHeading(h, pattern)) continue;
-
-            var end_pos = self.content.len;
-            for (parsed_headings[idx + 1 ..]) |next_h| {
-                if (next_h.depth <= h.depth) {
-                    end_pos = lineStartPos(self.content, next_h.line);
-                    break;
-                }
-            }
-
-            const start_pos = lineStartPos(self.content, h.line + 1);
-            if (start_pos <= end_pos) {
-                // Return a section value that carries position info for mutations
-                return .{ .string = self.content[start_pos..end_pos] };
-            }
-            return .{ .string = "" };
-        }
-
-        return .null;
-    }
-
-    fn evalReplace(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
-        if (fc.args.len != 1) {
-            self.setError("replace() requires exactly one argument", 0);
-            return null;
-        }
-        const inp = input orelse {
-            self.setError("replace() requires input", 0);
-            return null;
-        };
-
-        const section_text = switch (inp) {
-            .string => |s| s,
-            else => {
-                self.setError("replace() input must be a string (section)", 0);
-                return null;
-            },
-        };
-
-        const replacement_val = self.eval(fc.args[0]) orelse return null;
-        const replacement = switch (replacement_val) {
-            .string => |s| s,
-            else => {
-                self.setError("replace() argument must be a string", 0);
-                return null;
-            },
-        };
-
-        const pos = sliceOffset(self.content, section_text) orelse {
-            self.setError("replace: section is not a direct slice of the document", 0);
-            return null;
-        };
-
-        var result = std.ArrayListUnmanaged(u8).empty;
-        result.appendSlice(self.arena, self.content[0..pos]) catch @panic("out of memory");
-        result.appendSlice(self.arena, replacement) catch @panic("out of memory");
-        result.appendSlice(self.arena, self.content[pos + section_text.len ..]) catch @panic("out of memory");
-        return .{ .string = result.toOwnedSlice(self.arena) catch @panic("out of memory") };
-    }
-
-    fn evalAppend(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
-        if (fc.args.len != 1) {
-            self.setError("append() requires exactly one argument", 0);
-            return null;
-        }
-        const inp = input orelse {
-            self.setError("append() requires input", 0);
-            return null;
-        };
-
-        const section_text = switch (inp) {
-            .string => |s| s,
-            else => {
-                self.setError("append() input must be a string (section)", 0);
-                return null;
-            },
-        };
-
-        const append_val = self.eval(fc.args[0]) orelse return null;
-        const append_text = switch (append_val) {
-            .string => |s| s,
-            else => {
-                self.setError("append() argument must be a string", 0);
-                return null;
-            },
-        };
-
-        const pos = sliceOffset(self.content, section_text) orelse {
-            self.setError("append: section is not a direct slice of the document", 0);
-            return null;
-        };
-
-        const insert_pos = pos + section_text.len;
-        var result = std.ArrayListUnmanaged(u8).empty;
-        result.appendSlice(self.arena, self.content[0..insert_pos]) catch @panic("out of memory");
-        result.appendSlice(self.arena, append_text) catch @panic("out of memory");
-        result.appendSlice(self.arena, self.content[insert_pos..]) catch @panic("out of memory");
-        return .{ .string = result.toOwnedSlice(self.arena) catch @panic("out of memory") };
     }
 
     fn evalKeys(self: *Evaluator, input: ?Value) ?Value {
@@ -1360,40 +1226,6 @@ pub const Evaluator = struct {
     }
 };
 
-fn matchesHeading(h: md.headings.Heading, pattern: []const u8) bool {
-    var p = pattern;
-
-    var expected_depth: ?u3 = null;
-    if (p.len > 0 and p[0] == '#') {
-        var depth: u3 = 0;
-        var i: usize = 0;
-        while (i < p.len and p[i] == '#') : (i += 1) {
-            if (depth < 6) depth += 1;
-        }
-        expected_depth = depth;
-        while (i < p.len and (p[i] == ' ' or p[i] == '\t')) : (i += 1) {}
-        p = p[i..];
-    }
-
-    if (expected_depth) |d| {
-        if (h.depth != d) return false;
-    }
-
-    return std.mem.eql(u8, h.text, p);
-}
-
-fn lineStartPos(content: []const u8, target_line: usize) usize {
-    var line: usize = 1;
-    var pos: usize = 0;
-    while (pos < content.len and line < target_line) {
-        if (content[pos] == '\n') line += 1;
-        pos += 1;
-    }
-    return pos;
-}
-
-/// If `sub` is a slice of `container`, return its byte offset.
-/// Returns null if `sub` points outside `container`.
 const max_file_size = 10 * 1024 * 1024; // 10 MB
 
 fn scanIncoming(
@@ -1482,17 +1314,6 @@ fn isMarkdownFile(name: []const u8) bool {
         std.mem.endsWith(u8, name, ".markdown") or
         std.mem.endsWith(u8, name, ".Markdown") or
         std.mem.endsWith(u8, name, ".MARKDOWN");
-}
-
-fn sliceOffset(container: []const u8, sub: []const u8) ?usize {
-    const container_start = @intFromPtr(container.ptr);
-    const container_end = container_start + container.len;
-    const sub_start = @intFromPtr(sub.ptr);
-    const sub_end = sub_start + sub.len;
-    if (sub_start >= container_start and sub_end <= container_end) {
-        return sub_start - container_start;
-    }
-    return null;
 }
 
 fn renderRecordAsYaml(
@@ -3088,134 +2909,6 @@ test "set on TOML frontmatter passes ints unquoted" {
 }
 
 // Section tests
-
-test "section extracts content" {
-    const doc =
-        \\# Intro
-        \\intro text
-        \\## Methods
-        \\methods text
-        \\## Results
-        \\results text
-        \\
-    ;
-    const val = testEval("section(\"## Methods\")", doc).?;
-    try testing.expect(val == .string);
-    try testing.expect(std.mem.indexOf(u8, val.string, "methods text") != null);
-    try testing.expect(std.mem.indexOf(u8, val.string, "results text") == null);
-}
-
-test "section with depth-agnostic match" {
-    const doc =
-        \\# Intro
-        \\intro text
-        \\## Methods
-        \\methods text
-        \\## Results
-        \\results text
-        \\
-    ;
-    const val = testEval("section(\"Methods\")", doc).?;
-    try testing.expect(val == .string);
-    try testing.expect(std.mem.indexOf(u8, val.string, "methods text") != null);
-}
-
-test "section not found returns null" {
-    const val = testEval("section(\"## Missing\")", "# Intro\ntext\n").?;
-    try testing.expect(val == .null);
-}
-
-test "section replace" {
-    const doc =
-        \\# Intro
-        \\intro text
-        \\## Methods
-        \\old methods
-        \\## Results
-        \\results text
-        \\
-    ;
-    const val = testEval(
-        "section(\"## Methods\") | replace(\"new methods\\n\")",
-        doc,
-    ).?;
-    try testing.expect(val == .string);
-    try testing.expect(std.mem.indexOf(u8, val.string, "new methods") != null);
-    try testing.expect(std.mem.indexOf(u8, val.string, "old methods") == null);
-    try testing.expect(std.mem.indexOf(u8, val.string, "results text") != null);
-}
-
-test "section append" {
-    const doc =
-        \\# Intro
-        \\intro text
-        \\## Methods
-        \\existing methods
-        \\## Results
-        \\results text
-        \\
-    ;
-    const val = testEval(
-        "section(\"## Methods\") | append(\"added text\\n\")",
-        doc,
-    ).?;
-    try testing.expect(val == .string);
-    try testing.expect(std.mem.indexOf(u8, val.string, "existing methods") != null);
-    try testing.expect(std.mem.indexOf(u8, val.string, "added text") != null);
-}
-
-// keys and has tests
-
-test "section piped to headings extracts only section headings" {
-    const doc =
-        \\# Intro
-        \\intro text
-        \\## Methods
-        \\### Sub Method
-        \\method details
-        \\## Results
-        \\### Sub Result
-        \\results text
-        \\
-    ;
-    const val = testEval("section(\"## Methods\") | headings", doc).?;
-    try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("Sub Method", val.array[0].record.get("text").?.string);
-}
-
-test "section piped to links extracts only section links" {
-    const doc =
-        \\# Intro
-        \\See [intro](https://intro.com).
-        \\## Methods
-        \\See [method](https://method.com) and [[wiki]].
-        \\## Results
-        \\See [result](https://result.com).
-        \\
-    ;
-    const val = testEval("section(\"## Methods\") | links", doc).?;
-    try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
-    try testing.expectEqualStrings("https://method.com", val.array[0].record.get("target").?.string);
-    try testing.expectEqualStrings("wiki", val.array[1].record.get("target").?.string);
-}
-
-test "section piped to tags extracts only section tags" {
-    const doc =
-        \\# Intro
-        \\#intro-tag
-        \\## Methods
-        \\#method-tag content
-        \\## Results
-        \\#result-tag
-        \\
-    ;
-    const val = testEval("section(\"## Methods\") | tags", doc).?;
-    try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("method-tag", val.array[0].record.get("name").?.string);
-}
 
 test "keys on frontmatter" {
     const val = testEval("frontmatter | keys", test_doc).?;

@@ -9,6 +9,7 @@ const md = struct {
     const tags = @import("tags.zig");
     const comments = @import("comments.zig");
     const footnotes = @import("footnotes.zig");
+    const nodes = @import("nodes.zig");
 };
 
 const Node = parser_mod.Node;
@@ -198,7 +199,7 @@ pub const Evaluator = struct {
         const extractors = [_][]const u8{
             "frontmatter", "body",      "headings",  "links",
             "tags",        "codeblocks", "stats",    "comments",
-            "footnotes",   "incoming",
+            "footnotes",   "incoming",   "nodes",
         };
         for (extractors) |e| {
             if (std.mem.eql(u8, name, e)) return true;
@@ -221,6 +222,7 @@ pub const Evaluator = struct {
         if (std.mem.eql(u8, name, "comments")) return self.extractCommentsFrom(content);
         if (std.mem.eql(u8, name, "footnotes")) return self.extractFootnotesFrom(content);
         if (std.mem.eql(u8, name, "incoming")) return self.extractIncoming();
+        if (std.mem.eql(u8, name, "nodes")) return self.extractNodesFrom(content);
         return null;
     }
 
@@ -857,6 +859,15 @@ pub const Evaluator = struct {
         const items = self.arena.alloc(Value, parsed.len) catch @panic("out of memory");
         for (parsed, 0..) |f, idx| {
             items[idx] = footnoteToValue(self.arena, f);
+        }
+        return .{ .array = items };
+    }
+
+    fn extractNodesFrom(self: *Evaluator, content: []const u8) ?Value {
+        const parsed = md.nodes.parse(self.arena, content) catch @panic("out of memory");
+        const items = self.arena.alloc(Value, parsed.len) catch @panic("out of memory");
+        for (parsed, 0..) |n, idx| {
+            items[idx] = nodeToValue(self.arena, n);
         }
         return .{ .array = items };
     }
@@ -1854,6 +1865,40 @@ fn footnoteToValue(arena: std.mem.Allocator, f: md.footnotes.Footnote) Value {
     });
 }
 
+fn nodeToValue(arena: std.mem.Allocator, n: md.nodes.Node) Value {
+    var pairs_buf: [6]KV = undefined;
+    var count: usize = 0;
+
+    pairs_buf[count] = .{ "type", .{ .string = @tagName(n.type) } };
+    count += 1;
+    pairs_buf[count] = .{ "text", .{ .string = n.text } };
+    count += 1;
+    pairs_buf[count] = .{ "line", .{ .int = @intCast(n.line) } };
+    count += 1;
+
+    switch (n.type) {
+        .heading => {
+            pairs_buf[count] = .{ "depth", .{ .int = @intCast(n.depth) } };
+            count += 1;
+        },
+        .codeblock => {
+            pairs_buf[count] = .{ "language", .{ .string = n.language } };
+            count += 1;
+        },
+        .comment => {
+            pairs_buf[count] = .{ "kind", .{ .string = n.kind } };
+            count += 1;
+        },
+        .footnote => {
+            pairs_buf[count] = .{ "label", .{ .string = n.label } };
+            count += 1;
+        },
+        .paragraph => {},
+    }
+
+    return recordFromPairs(arena, pairs_buf[0..count]);
+}
+
 const KV = struct { []const u8, Value };
 
 fn recordFromPairs(arena: std.mem.Allocator, pairs: []const KV) Value {
@@ -2323,6 +2368,54 @@ test "footnotes empty document" {
     const val = testEval("footnotes", "no footnotes\n").?;
     try testing.expect(val == .array);
     try testing.expectEqual(@as(usize, 0), val.array.len);
+}
+
+test "nodes extracts array" {
+    const val = testEval("nodes", test_doc).?;
+    try testing.expect(val == .array);
+    try testing.expect(val.array.len > 0);
+    // First node should be a heading
+    const first = val.array[0];
+    try testing.expect(first == .record);
+    try testing.expectEqualStrings("heading", first.record.get("type").?.string);
+    try testing.expectEqualStrings("Introduction", first.record.get("text").?.string);
+}
+
+test "nodes field access on heading" {
+    const result = testRender("nodes | first | .type", test_doc).?;
+    try testing.expectEqualStrings("heading", result);
+}
+
+test "nodes select by type" {
+    const val = testEval("nodes | select(.type == \"heading\")", test_doc).?;
+    try testing.expect(val == .array);
+    for (val.array) |item| {
+        try testing.expectEqualStrings("heading", item.record.get("type").?.string);
+    }
+}
+
+test "nodes heading has depth" {
+    const val = testEval("nodes | select(.type == \"heading\") | first | .depth", test_doc).?;
+    try testing.expect(val == .int);
+    try testing.expectEqual(@as(i64, 1), val.int);
+}
+
+test "nodes codeblock has language" {
+    const val = testEval("nodes | select(.type == \"codeblock\") | first | .language", test_doc).?;
+    try testing.expect(val == .string);
+    try testing.expectEqualStrings("go", val.string);
+}
+
+test "nodes count" {
+    const val = testEval("nodes | count", test_doc).?;
+    try testing.expect(val == .int);
+    try testing.expect(val.int > 0);
+}
+
+test "nodes json output" {
+    const result = testRenderJson("nodes | select(.type == \"heading\") | first", test_doc).?;
+    try testing.expect(std.mem.indexOf(u8, result, "\"type\":\"heading\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"depth\":1") != null);
 }
 
 test "nested field access" {

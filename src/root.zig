@@ -11,6 +11,7 @@ pub const parser = @import("parser.zig");
 pub const eval = @import("eval.zig");
 pub const comments = @import("comments.zig");
 pub const footnotes = @import("footnotes.zig");
+pub const nodes = @import("nodes.zig");
 
 test {
     std.testing.refAllDecls(@This());

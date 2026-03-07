@@ -78,7 +78,7 @@ First element.
 .It Ic last
 Last element.
 .It Ic count
-Array length.
+Length of an array, string, or record.
 .It Ic reverse
 Reverse order.
 .It Ic map(.field)
@@ -116,6 +116,11 @@ Extract content under a heading.
 Replace section content. Produces the modified document.
 .It Ic append(text)
 Append to section content. Produces the modified document.
+.It Ic .field += [values]
+Append values to a frontmatter array field.
+Produces the modified document.
+If the field is null, creates it with the given array.
+If the field is an array, concatenates the values.
 .El
 .Ss Link Validation
 .Bl -tag -width "resolve" -compact
@@ -143,7 +148,7 @@ and
 .Ic resolve .
 .It Fl i
 Edit the file in-place. The program must produce a document string.
-.It Fl -help
+.It Fl h , Fl -help
 Show usage information.
 .El
 .Sh EXIT STATUS
@@ -175,6 +180,12 @@ Find incoming links:
 .Pp
 JSON output:
 .Dl md 'headings' --json notes.md
+.Pp
+Append to a frontmatter array:
+.Dl md 'frontmatter | .tags += [\&"new-tag\&"]' -i notes.md
+.Pp
+Extract links from a section:
+.Dl md 'section(\&"## API\&") | links' notes.md
 .Pp
 Read from stdin:
 .Dl cat notes.md | md 'tags | map(.name) | unique'

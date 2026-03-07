@@ -127,6 +127,21 @@ md 'frontmatter | keys' notes.md
 md 'frontmatter | has("draft")' notes.md
 ```
 
+## Format Conversion
+
+`yaml` and `toml` convert between records and text:
+
+```sh
+# Record to YAML text
+md 'frontmatter | yaml' notes.md
+
+# Record to TOML text
+md 'frontmatter | toml' notes.md
+
+# Parse YAML text into a record
+md 'codeblocks | select(.language == "yaml") | first | .content | yaml' notes.md
+```
+
 ## Frontmatter Mutation
 
 `set()` and `del()` modify frontmatter fields.
@@ -141,6 +156,9 @@ md 'frontmatter | del(.draft)' notes.md
 
 # Edit in-place
 md 'frontmatter | set(.draft, false)' -i notes.md
+
+# Append to an array field (creates field if missing)
+md 'frontmatter | .tags += ["new-tag"]' -i notes.md
 ```
 
 ## Section Operations

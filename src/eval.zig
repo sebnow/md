@@ -117,6 +117,16 @@ pub const Evaluator = struct {
             return self.evalSelect(fc, input);
         }
 
+        // skip_until(predicate): drop elements until predicate matches
+        if (std.mem.eql(u8, fc.name, "skip_until")) {
+            return self.evalSkipUntil(fc, input);
+        }
+
+        // take_until(predicate): take elements until predicate matches
+        if (std.mem.eql(u8, fc.name, "take_until")) {
+            return self.evalTakeUntil(fc, input);
+        }
+
         // contains(field, substring)
         if (std.mem.eql(u8, fc.name, "contains")) {
             return self.evalContains(fc, input);
@@ -256,6 +266,62 @@ pub const Evaluator = struct {
                 return .null;
             },
         }
+    }
+
+    fn evalSkipUntil(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 1) {
+            self.setError("skip_until() requires exactly one argument", 0);
+            return null;
+        }
+        const predicate = fc.args[0];
+        const inp = input orelse {
+            self.setError("skip_until() requires input", 0);
+            return null;
+        };
+
+        const arr = switch (inp) {
+            .array => |a| a,
+            else => {
+                self.setError("skip_until() requires array input", 0);
+                return null;
+            },
+        };
+
+        for (arr, 0..) |item, idx| {
+            const pred_val = self.evalWithInput(predicate, item) orelse continue;
+            if (isTruthy(pred_val)) {
+                return .{ .array = arr[idx + 1 ..] };
+            }
+        }
+        return .{ .array = &.{} };
+    }
+
+    fn evalTakeUntil(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 1) {
+            self.setError("take_until() requires exactly one argument", 0);
+            return null;
+        }
+        const predicate = fc.args[0];
+        const inp = input orelse {
+            self.setError("take_until() requires input", 0);
+            return null;
+        };
+
+        const arr = switch (inp) {
+            .array => |a| a,
+            else => {
+                self.setError("take_until() requires array input", 0);
+                return null;
+            },
+        };
+
+        for (arr, 0..) |item, idx| {
+            const pred_val = self.evalWithInput(predicate, item) orelse continue;
+            if (isTruthy(pred_val)) {
+                return .{ .array = arr[0..idx] };
+            }
+        }
+        return .{ .array = arr };
     }
 
     fn evalContains(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
@@ -2416,6 +2482,104 @@ test "nodes json output" {
     const result = testRenderJson("nodes | select(.type == \"heading\") | first", test_doc).?;
     try testing.expect(std.mem.indexOf(u8, result, "\"type\":\"heading\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"depth\":1") != null);
+}
+
+test "skip_until drops elements before match" {
+    const doc =
+        \\# A
+        \\
+        \\Text A.
+        \\
+        \\# B
+        \\
+        \\Text B.
+        \\
+    ;
+    const val = testEval("nodes | skip_until(.type == \"heading\" and .text == \"B\")", doc).?;
+    try testing.expect(val == .array);
+    // Should contain only the paragraph after "# B"
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("paragraph", val.array[0].record.get("type").?.string);
+    try testing.expectEqualStrings("Text B.", val.array[0].record.get("text").?.string);
+}
+
+test "skip_until no match returns empty" {
+    const val = testEval("nodes | skip_until(.type == \"codeblock\")", "# Title\n").?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 0), val.array.len);
+}
+
+test "take_until keeps elements before match" {
+    const doc =
+        \\# A
+        \\
+        \\Text A.
+        \\
+        \\# B
+        \\
+        \\Text B.
+        \\
+    ;
+    const val = testEval("nodes | take_until(.type == \"heading\" and .text == \"B\")", doc).?;
+    try testing.expect(val == .array);
+    // Should contain heading A and paragraph A
+    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqualStrings("A", val.array[0].record.get("text").?.string);
+    try testing.expectEqualStrings("Text A.", val.array[1].record.get("text").?.string);
+}
+
+test "take_until no match returns all" {
+    const val = testEval("nodes | take_until(.type == \"codeblock\")", "# Title\n").?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+}
+
+test "skip_until and take_until compose for section extraction" {
+    const doc =
+        \\# Intro
+        \\
+        \\Intro text.
+        \\
+        \\## Methods
+        \\
+        \\Method details.
+        \\
+        \\## Results
+        \\
+        \\Result details.
+        \\
+    ;
+    // Extract content between "## Methods" and "## Results"
+    const val = testEval(
+        "nodes | skip_until(.type == \"heading\" and .text == \"Methods\") | take_until(.type == \"heading\" and .text == \"Results\")",
+        doc,
+    ).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("Method details.", val.array[0].record.get("text").?.string);
+}
+
+test "skip_until requires array input" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+    var p = Parser.init(alloc, "skip_until(.x == 1)");
+    const node = p.parse().?;
+    var evaluator = Evaluator.init(alloc, "text");
+    // skip_until with no input should error
+    const result = evaluator.eval(node);
+    try testing.expect(result == null);
+    try testing.expect(evaluator.err != null);
+}
+
+test "take_until requires array input" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+    var p = Parser.init(alloc, "take_until(.x == 1)");
+    const node = p.parse().?;
+    var evaluator = Evaluator.init(alloc, "text");
+    const result = evaluator.eval(node);
+    try testing.expect(result == null);
+    try testing.expect(evaluator.err != null);
 }
 
 test "nested field access" {

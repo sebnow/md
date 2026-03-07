@@ -1,4 +1,4 @@
-.Dd March 2, 2026
+.Dd March 7, 2026
 .Dt MD 1
 .Os
 .Sh NAME
@@ -51,6 +51,10 @@ Word and line counts.
 HTML and Obsidian comments with kind, text, and line.
 .It Ic footnotes
 Footnote definitions with label, text, and line.
+.It Ic nodes
+Block-level document nodes with type, text, and line.
+Types: heading, paragraph, codeblock, comment, footnote.
+Type-specific fields: depth, language, kind, label.
 .It Ic incoming
 Files linking to the input file. Requires
 .Fl -dir
@@ -71,6 +75,13 @@ boolean logic
 .Pq Li "and, or, not" ,
 and string functions
 .Pq Li "contains(), startswith()" .
+.Pp
+.Ic skip_until(predicate)
+drops array elements until the predicate matches (exclusive of the match).
+.Ic take_until(predicate)
+takes array elements until the predicate matches (exclusive of the match).
+These compose for positional queries on
+.Ic nodes .
 .Ss List Operations
 .Bl -tag -width "group(.field)" -compact
 .It Ic first
@@ -105,17 +116,11 @@ Record to YAML text, or YAML text to record.
 Record to TOML text, or TOML text to record.
 .El
 .Ss Mutation
-.Bl -tag -width "replace(text)" -compact
+.Bl -tag -width "set(.field, value)" -compact
 .It Ic set(.field, value)
 Set a frontmatter field. Produces the modified document.
 .It Ic del(.field)
 Delete a frontmatter field. Produces the modified document.
-.It Ic section(heading)
-Extract content under a heading.
-.It Ic replace(text)
-Replace section content. Produces the modified document.
-.It Ic append(text)
-Append to section content. Produces the modified document.
 .It Ic .field += [values]
 Append values to a frontmatter array field.
 Produces the modified document.
@@ -169,8 +174,8 @@ Set a frontmatter field in-place:
 Delete a frontmatter field:
 .Dl md 'frontmatter | del(.tags)' -i notes.md
 .Pp
-Extract a section:
-.Dl md 'section(\&"## API\&")' notes.md
+Extract content under a heading using nodes:
+.Dl md 'nodes | skip_until(.text == \&"API\&") | take_until(.type == \&"heading\&")' notes.md
 .Pp
 Find broken links:
 .Dl md 'links | exists | select(.exists == false)' --dir ./vault/ notes.md
@@ -184,8 +189,8 @@ JSON output:
 Append to a frontmatter array:
 .Dl md 'frontmatter | .tags += [\&"new-tag\&"]' -i notes.md
 .Pp
-Extract links from a section:
-.Dl md 'section(\&"## API\&") | links' notes.md
+Extract content between comment markers:
+.Dl md 'nodes | skip_until(.type == \&"comment\&" and contains(.text, \&"begin\&")) | take_until(.type == \&"comment\&" and contains(.text, \&"end\&"))' notes.md
 .Pp
 Read from stdin:
 .Dl cat notes.md | md 'tags | map(.name) | unique'

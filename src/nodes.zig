@@ -20,6 +20,9 @@ pub const Node = struct {
     kind: []const u8 = "",
     /// Footnote label, only valid when type == .footnote
     label: []const u8 = "",
+    /// Full block extent including structural syntax and trailing whitespace.
+    /// Consecutive nodes' sources tile contiguously across the body.
+    source: []const u8 = "",
 };
 
 /// Parse the document body into a flat sequence of typed block nodes.
@@ -28,6 +31,8 @@ pub const Node = struct {
 pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error![]const Node {
     const body = skipFrontmatter(content);
     var nodes: std.ArrayListUnmanaged(Node) = .empty;
+    var block_starts: std.ArrayListUnmanaged(usize) = .empty;
+    defer block_starts.deinit(allocator);
 
     var line_num: usize = lineOffset(content, body);
     var pos: usize = 0;
@@ -43,7 +48,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
         // Blank line: flush paragraph
         if (isBlankLine(line)) {
             if (para_start) |ps| {
-                try flushParagraph(&nodes, allocator, body, ps, line_start, para_line);
+                try flushParagraph(&nodes, &block_starts, allocator, body, ps, line_start, para_line);
                 para_start = null;
             }
             pos = next;
@@ -54,7 +59,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
         // Fenced code block
         if (parseFenceOpen(line)) |fence| {
             if (para_start) |ps| {
-                try flushParagraph(&nodes, allocator, body, ps, line_start, para_line);
+                try flushParagraph(&nodes, &block_starts, allocator, body, ps, line_start, para_line);
                 para_start = null;
             }
 
@@ -80,6 +85,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                 content_end = body.len;
             }
 
+            try block_starts.append(allocator, line_start);
             try nodes.append(allocator, .{
                 .type = .codeblock,
                 .text = body[content_start..content_end],
@@ -92,9 +98,10 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
         // ATX heading
         if (parseHeading(line)) |h| {
             if (para_start) |ps| {
-                try flushParagraph(&nodes, allocator, body, ps, line_start, para_line);
+                try flushParagraph(&nodes, &block_starts, allocator, body, ps, line_start, para_line);
                 para_start = null;
             }
+            try block_starts.append(allocator, line_start);
             try nodes.append(allocator, .{
                 .type = .heading,
                 .text = h.text,
@@ -109,9 +116,10 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
         // HTML comment on its own line(s)
         if (parseBlockHtmlComment(body, line_start)) |comment| {
             if (para_start) |ps| {
-                try flushParagraph(&nodes, allocator, body, ps, line_start, para_line);
+                try flushParagraph(&nodes, &block_starts, allocator, body, ps, line_start, para_line);
                 para_start = null;
             }
+            try block_starts.append(allocator, line_start);
             try nodes.append(allocator, .{
                 .type = .comment,
                 .text = comment.text,
@@ -126,9 +134,10 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
         // Obsidian comment on its own line(s)
         if (parseBlockObsidianComment(body, line_start)) |comment| {
             if (para_start) |ps| {
-                try flushParagraph(&nodes, allocator, body, ps, line_start, para_line);
+                try flushParagraph(&nodes, &block_starts, allocator, body, ps, line_start, para_line);
                 para_start = null;
             }
+            try block_starts.append(allocator, line_start);
             try nodes.append(allocator, .{
                 .type = .comment,
                 .text = comment.text,
@@ -143,9 +152,10 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
         // Footnote definition
         if (parseFootnote(line)) |fn_info| {
             if (para_start) |ps| {
-                try flushParagraph(&nodes, allocator, body, ps, line_start, para_line);
+                try flushParagraph(&nodes, &block_starts, allocator, body, ps, line_start, para_line);
                 para_start = null;
             }
+            try block_starts.append(allocator, line_start);
             try nodes.append(allocator, .{
                 .type = .footnote,
                 .text = fn_info.text,
@@ -168,7 +178,14 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
 
     // Flush any trailing paragraph
     if (para_start) |ps| {
-        try flushParagraph(&nodes, allocator, body, ps, body.len, para_line);
+        try flushParagraph(&nodes, &block_starts, allocator, body, ps, body.len, para_line);
+    }
+
+    // Post-process: set .source via tiling
+    for (nodes.items, 0..) |*n, i| {
+        const start = if (i == 0) 0 else block_starts.items[i];
+        const end = if (i + 1 < nodes.items.len) block_starts.items[i + 1] else body.len;
+        n.source = body[start..end];
     }
 
     return nodes.toOwnedSlice(allocator);
@@ -176,6 +193,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
 
 fn flushParagraph(
     nodes: *std.ArrayListUnmanaged(Node),
+    block_starts: *std.ArrayListUnmanaged(usize),
     allocator: std.mem.Allocator,
     body: []const u8,
     start: usize,
@@ -188,6 +206,7 @@ fn flushParagraph(
         trimmed_end -= 1;
     }
     if (trimmed_end > start) {
+        try block_starts.append(allocator, start);
         try nodes.append(allocator, .{
             .type = .paragraph,
             .text = body[start..trimmed_end],
@@ -762,4 +781,81 @@ test "multiple headings at different depths" {
         .{ .type = .heading, .text = "H2", .line = 2, .depth = 2 },
         .{ .type = .heading, .text = "H3", .line = 3, .depth = 3 },
     });
+}
+
+test "source: single node covers entire body" {
+    const input = "Hello world.\n";
+    const result = try parse(testing.allocator, input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings(input, result[0].source);
+}
+
+test "source: multiple nodes tile contiguously" {
+    const input =
+        \\# Title
+        \\
+        \\Some text.
+        \\
+        \\# Another
+        \\
+    ;
+    const result = try parse(testing.allocator, input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 3), result.len);
+    // No gaps, no overlaps
+    const body = skipFrontmatter(input);
+    var prev_end: usize = 0;
+    for (result) |n| {
+        const src_start = @intFromPtr(n.source.ptr) - @intFromPtr(body.ptr);
+        try testing.expectEqual(prev_end, src_start);
+        prev_end = src_start + n.source.len;
+    }
+    try testing.expectEqual(body.len, prev_end);
+}
+
+test "source: first node absorbs leading blank lines" {
+    const input =
+        \\
+        \\# Title
+        \\
+    ;
+    const result = try parse(testing.allocator, input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 1), result.len);
+    // First node's source starts at offset 0 of body, absorbing the leading blank line
+    try testing.expectEqualStrings(input, result[0].source);
+}
+
+test "source: last node extends to end of body" {
+    const input =
+        \\# Title
+        \\
+        \\Para.
+        \\
+    ;
+    const result = try parse(testing.allocator, input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 2), result.len);
+    // Last node's source extends to the end of the body
+    const body = skipFrontmatter(input);
+    const last_src_end = @intFromPtr(result[result.len - 1].source.ptr) +
+        result[result.len - 1].source.len - @intFromPtr(body.ptr);
+    try testing.expectEqual(body.len, last_src_end);
+}
+
+test "source: frontmatter excluded from sources" {
+    const input =
+        \\---
+        \\title: Test
+        \\---
+        \\# Title
+        \\
+    ;
+    const result = try parse(testing.allocator, input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 1), result.len);
+    // Source should be a subslice of body (after frontmatter), not content
+    const body = skipFrontmatter(input);
+    try testing.expectEqualStrings(body, result[0].source);
 }

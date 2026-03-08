@@ -162,6 +162,16 @@ pub const Evaluator = struct {
             return self.evalDel(fc, input);
         }
 
+        // replace(text): replace span in document
+        if (std.mem.eql(u8, fc.name, "replace")) {
+            return self.evalReplace(fc, input);
+        }
+
+        // append(text): insert after span in document
+        if (std.mem.eql(u8, fc.name, "append")) {
+            return self.evalAppend(fc, input);
+        }
+
         // keys: list record keys
         if (std.mem.eql(u8, fc.name, "keys")) {
             return self.evalKeys(input);
@@ -608,6 +618,135 @@ pub const Evaluator = struct {
         ops[0] = .{ .delete = field_name };
         const result = md.frontmatter.editFields(self.arena, doc, ops) catch @panic("out of memory");
         return .{ .string = result };
+    }
+
+    fn evalReplace(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 1) {
+            self.setError("replace() requires exactly one argument", 0);
+            return null;
+        }
+        const replacement = blk: {
+            const arg = self.eval(fc.args[0]) orelse return null;
+            break :blk switch (arg) {
+                .string => |s| s,
+                else => {
+                    self.setError("replace() argument must be a string", 0);
+                    return null;
+                },
+            };
+        };
+        const inp = input orelse {
+            self.setError("replace() requires input", 0);
+            return null;
+        };
+        const span = self.resolveSpan(inp) orelse return null;
+        const before = self.content[0..span.start];
+        const after = self.content[span.end..];
+        const buf = self.arena.alloc(u8, before.len + replacement.len + after.len) catch @panic("out of memory");
+        @memcpy(buf[0..before.len], before);
+        @memcpy(buf[before.len..][0..replacement.len], replacement);
+        @memcpy(buf[before.len + replacement.len ..], after);
+        return .{ .string = buf };
+    }
+
+    fn evalAppend(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
+        if (fc.args.len != 1) {
+            self.setError("append() requires exactly one argument", 0);
+            return null;
+        }
+        const text = blk: {
+            const arg = self.eval(fc.args[0]) orelse return null;
+            break :blk switch (arg) {
+                .string => |s| s,
+                else => {
+                    self.setError("append() argument must be a string", 0);
+                    return null;
+                },
+            };
+        };
+        const inp = input orelse {
+            self.setError("append() requires input", 0);
+            return null;
+        };
+        const span = self.resolveSpan(inp) orelse return null;
+        const before = self.content[0..span.end];
+        const after = self.content[span.end..];
+        const buf = self.arena.alloc(u8, before.len + text.len + after.len) catch @panic("out of memory");
+        @memcpy(buf[0..before.len], before);
+        @memcpy(buf[before.len..][0..text.len], text);
+        @memcpy(buf[before.len + text.len ..], after);
+        return .{ .string = buf };
+    }
+
+    const Span = struct { start: usize, end: usize };
+
+    fn resolveSpan(self: *Evaluator, val: Value) ?Span {
+        switch (val) {
+            .string => |s| {
+                if (sliceOffset(self.content, s)) |off| return off;
+                self.setError("replace/append: string is not a subslice of the document", 0);
+                return null;
+            },
+            .record => |rec| {
+                const source_val = rec.get("source") orelse {
+                    self.setError("replace/append: record has no .source field", 0);
+                    return null;
+                };
+                const source = switch (source_val) {
+                    .string => |s| s,
+                    else => {
+                        self.setError("replace/append: .source must be a string", 0);
+                        return null;
+                    },
+                };
+                if (sliceOffset(self.content, source)) |off| return off;
+                self.setError("replace/append: .source is not a subslice of the document", 0);
+                return null;
+            },
+            .array => |arr| {
+                if (arr.len == 0) {
+                    self.setError("replace/append: empty array", 0);
+                    return null;
+                }
+                const first_source = self.getSourceFromValue(arr[0]) orelse return null;
+                const last_source = self.getSourceFromValue(arr[arr.len - 1]) orelse return null;
+                const first_off = sliceOffset(self.content, first_source) orelse {
+                    self.setError("replace/append: .source is not a subslice of the document", 0);
+                    return null;
+                };
+                const last_off = sliceOffset(self.content, last_source) orelse {
+                    self.setError("replace/append: .source is not a subslice of the document", 0);
+                    return null;
+                };
+                return .{ .start = first_off.start, .end = last_off.end };
+            },
+            else => {
+                self.setError("replace/append: unsupported input type", 0);
+                return null;
+            },
+        }
+    }
+
+    fn getSourceFromValue(self: *Evaluator, val: Value) ?[]const u8 {
+        switch (val) {
+            .record => |rec| {
+                const source_val = rec.get("source") orelse {
+                    self.setError("replace/append: record has no .source field", 0);
+                    return null;
+                };
+                return switch (source_val) {
+                    .string => |s| s,
+                    else => {
+                        self.setError("replace/append: .source must be a string", 0);
+                        return null;
+                    },
+                };
+            },
+            else => {
+                self.setError("replace/append: array elements must be records with .source", 0);
+                return null;
+            },
+        }
     }
 
     fn evalKeys(self: *Evaluator, input: ?Value) ?Value {
@@ -1753,7 +1892,7 @@ fn footnoteToValue(arena: std.mem.Allocator, f: md.footnotes.Footnote) Value {
 }
 
 fn nodeToValue(arena: std.mem.Allocator, n: md.nodes.Node) Value {
-    var pairs_buf: [6]KV = undefined;
+    var pairs_buf: [7]KV = undefined;
     var count: usize = 0;
 
     pairs_buf[count] = .{ "type", .{ .string = @tagName(n.type) } };
@@ -1783,7 +1922,22 @@ fn nodeToValue(arena: std.mem.Allocator, n: md.nodes.Node) Value {
         .paragraph => {},
     }
 
+    pairs_buf[count] = .{ "source", .{ .string = n.source } };
+    count += 1;
+
     return recordFromPairs(arena, pairs_buf[0..count]);
+}
+
+fn sliceOffset(container: []const u8, sub: []const u8) ?Evaluator.Span {
+    const container_start = @intFromPtr(container.ptr);
+    const container_end = container_start + container.len;
+    const sub_start = @intFromPtr(sub.ptr);
+    const sub_end = sub_start + sub.len;
+    if (sub_start < container_start or sub_end > container_end) return null;
+    return .{
+        .start = sub_start - container_start,
+        .end = sub_end - container_start,
+    };
 }
 
 const KV = struct { []const u8, Value };
@@ -3463,4 +3617,104 @@ test "empty array literal" {
     const val = testEval("[]", "").?;
     try testing.expect(val == .array);
     try testing.expectEqual(@as(usize, 0), val.array.len);
+}
+
+test "replace: body without frontmatter" {
+    const val = testEval("body | replace(\"new body\\n\")", "Old body.\n").?;
+    try testing.expectEqualStrings("new body\n", val.string);
+}
+
+test "replace: body with frontmatter" {
+    const doc =
+        \\---
+        \\title: Test
+        \\---
+        \\Old body.
+        \\
+    ;
+    const val = testEval("body | replace(\"new body\\n\")", doc).?;
+    try testing.expect(std.mem.startsWith(u8, val.string, "---\n"));
+    try testing.expect(std.mem.endsWith(u8, val.string, "new body\n"));
+}
+
+test "append: body" {
+    const val = testEval("body | append(\"extra\\n\")", "Body.\n").?;
+    try testing.expectEqualStrings("Body.\nextra\n", val.string);
+}
+
+test "replace: single node" {
+    const val = testEval("nodes | first | replace(\"# New\\n\\n\")", "# Old\n\nPara.\n").?;
+    try testing.expect(std.mem.startsWith(u8, val.string, "# New\n\n"));
+    try testing.expect(std.mem.endsWith(u8, val.string, "Para.\n"));
+}
+
+test "replace: node range" {
+    const doc =
+        \\# A
+        \\
+        \\Text A.
+        \\
+        \\# B
+        \\
+        \\Text B.
+        \\
+    ;
+    const val = testEval(
+        "nodes | skip_until(.text == \"A\") | take_until(.type == \"heading\" and .text == \"B\") | replace(\"Replaced.\\n\")",
+        doc,
+    ).?;
+    try testing.expect(std.mem.startsWith(u8, val.string, "# A\n"));
+    try testing.expect(std.mem.indexOf(u8, val.string, "Replaced.\n") != null);
+    try testing.expect(std.mem.endsWith(u8, val.string, "Text B.\n"));
+}
+
+test "append: after node range" {
+    const doc =
+        \\# A
+        \\
+        \\Text A.
+        \\
+        \\# B
+        \\
+    ;
+    const val = testEval(
+        "nodes | skip_until(.text == \"A\") | take_until(.type == \"heading\" and .text == \"B\") | append(\"Added.\\n\")",
+        doc,
+    ).?;
+    try testing.expect(std.mem.indexOf(u8, val.string, "Text A.") != null);
+    try testing.expect(std.mem.indexOf(u8, val.string, "Added.\n") != null);
+    try testing.expect(std.mem.indexOf(u8, val.string, "# B") != null);
+}
+
+test "replace: error without input" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+    var p = Parser.init(alloc, "replace(\"x\")");
+    const node = p.parse().?;
+    var evaluator = Evaluator.init(alloc, "text");
+    const result = evaluator.eval(node);
+    try testing.expect(result == null);
+    try testing.expect(evaluator.err != null);
+}
+
+test "replace: error on empty array" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+    var p = Parser.init(alloc, "nodes | select(.type == \"codeblock\") | replace(\"x\")");
+    const node = p.parse().?;
+    var evaluator = Evaluator.init(alloc, "# Title\n");
+    const result = evaluator.eval(node);
+    try testing.expect(result == null);
+    try testing.expect(evaluator.err != null);
+}
+
+test "replace: error on non-string argument" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+    var p = Parser.init(alloc, "body | replace(42)");
+    const node = p.parse().?;
+    var evaluator = Evaluator.init(alloc, "text");
+    const result = evaluator.eval(node);
+    try testing.expect(result == null);
+    try testing.expect(evaluator.err != null);
 }

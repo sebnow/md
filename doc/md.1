@@ -52,9 +52,13 @@ HTML and Obsidian comments with kind, text, and line.
 .It Ic footnotes
 Footnote definitions with label, text, and line.
 .It Ic nodes
-Block-level document nodes with type, text, and line.
+Block-level document nodes with type, text, line, and source.
 Types: heading, paragraph, codeblock, comment, footnote.
 Type-specific fields: depth, language, kind, label.
+The
+.Li .source
+field covers the full block extent (structural syntax + content + trailing whitespace).
+Consecutive nodes' sources tile contiguously across the body.
 .It Ic incoming
 Files linking to the input file. Requires
 .Fl -dir
@@ -126,6 +130,14 @@ Append values to a frontmatter array field.
 Produces the modified document.
 If the field is null, creates it with the given array.
 If the field is an array, concatenates the values.
+.It Ic replace(text)
+Replace a span in the document.
+Works on body strings, single node records, and node arrays.
+Produces the modified document.
+.It Ic append(text)
+Insert text after a span in the document.
+Works on body strings, single node records, and node arrays.
+Produces the modified document.
 .El
 .Ss Link Validation
 .Bl -tag -width "resolve" -compact
@@ -188,6 +200,15 @@ JSON output:
 .Pp
 Append to a frontmatter array:
 .Dl md 'frontmatter | .tags += [\&"new-tag\&"]' -i notes.md
+.Pp
+Replace a section's content:
+.Dl md 'nodes | skip_until(.text == \&"Notes\&") | take_until(.type == \&"heading\&") | replace(\&"Updated.\en\&")' -i notes.md
+.Pp
+Append after a section:
+.Dl md 'nodes | skip_until(.text == \&"Notes\&") | take_until(.type == \&"heading\&") | append(\&"More.\en\&")' -i notes.md
+.Pp
+Replace entire body:
+.Dl md 'body | replace(\&"New content.\en\&")' -i notes.md
 .Pp
 Extract content between comment markers:
 .Dl md 'nodes | skip_until(.type == \&"comment\&" and contains(.text, \&"begin\&")) | take_until(.type == \&"comment\&" and contains(.text, \&"end\&"))' notes.md

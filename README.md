@@ -161,22 +161,31 @@ md 'frontmatter | set(.draft, false)' -i notes.md
 md 'frontmatter | .tags += ["new-tag"]' -i notes.md
 ```
 
-## Section Operations
+## Body and Node Mutation
 
-Extract and modify content under a heading.
+`replace()` and `append()` modify the document body.
+They work on body strings, single nodes, and node ranges.
+Use `-i` for in-place editing.
 
 ```sh
-# Extract section content
-md 'section("## Methods")' notes.md
+# Replace entire body
+md 'body | replace("New content.\n")' -i notes.md
 
-# Match by heading text (any depth)
-md 'section("Methods")' notes.md
+# Append to body
+md 'body | append("Extra paragraph.\n")' -i notes.md
 
-# Replace section content
-md 'section("## Methods") | replace("new content\n")' -i notes.md
+# Replace a single node
+md 'nodes | first | replace("# New Title\n\n")' -i notes.md
 
-# Append to a section
-md 'section("## Notes") | append("extra text\n")' -i notes.md
+# Replace a range of nodes
+md 'nodes | skip_until(.type == "heading" and .text == "Notes")
+         | take_until(.type == "heading")
+         | replace("Updated notes.\n")' -i notes.md
+
+# Append after a section
+md 'nodes | skip_until(.type == "heading" and .text == "Notes")
+         | take_until(.type == "heading")
+         | append("More notes.\n")' -i notes.md
 ```
 
 ## Link Validation

@@ -4,7 +4,8 @@ const md = @import("md");
 const usage =
     \\Usage: md '<program>' [options] [file]
     \\
-    \\Evaluate a DSL program against a Markdown file.
+    \\Evaluate a jq-inspired DSL program against a Markdown file.
+    \\If no file is given, reads from stdin.
     \\
     \\Options:
     \\  --json       Output in JSON format
@@ -12,7 +13,56 @@ const usage =
     \\  -i           Edit file in-place (for mutations)
     \\  --help       Show this help message
     \\
-    \\If no file is given, reads from stdin.
+    \\Extractors:
+    \\  frontmatter  YAML or TOML frontmatter as a record
+    \\  body         Document body without frontmatter (string)
+    \\  headings     Headings array: .depth, .text, .line
+    \\  links        Links array: .kind, .target, .text, .line
+    \\  tags         Inline tags array: .name, .line
+    \\  codeblocks   Code blocks array: .language, .content, .start_line, .end_line
+    \\  stats        Word and line counts: .lines, .words
+    \\  comments     Comments array: .kind, .text, .line
+    \\  footnotes    Footnotes array: .label, .text, .line
+    \\  nodes        Block nodes array: .type, .text, .line, .source
+    \\               Types: heading, paragraph, codeblock, comment, footnote
+    \\               Type-specific: .depth, .language, .kind, .label
+    \\  incoming     Files linking to input: .source, .kind, .line (needs --dir)
+    \\
+    \\Filtering:
+    \\  select(pred)         Filter arrays by predicate
+    \\  skip_until(pred)     Drop elements until predicate matches
+    \\  take_until(pred)     Take elements until predicate matches
+    \\  contains(.f, str)    Test if field contains substring
+    \\  startswith(.f, str)  Test if field starts with prefix
+    \\
+    \\List operations:
+    \\  first         First element
+    \\  last          Last element
+    \\  count         Length of array, string, or record
+    \\  reverse       Reverse array order
+    \\  unique        Deduplicate values
+    \\  map(.field)   Extract field from each element
+    \\  sort(.field)  Sort array by field
+    \\  group(.field) Group into record keyed by field value
+    \\
+    \\Record operations:
+    \\  keys          List record keys
+    \\  has("name")   Check if field exists
+    \\
+    \\Format conversion:
+    \\  yaml   Record to YAML text, or YAML text to record
+    \\  toml   Record to TOML text, or TOML text to record
+    \\
+    \\Mutation:
+    \\  set(.field, value)   Set a frontmatter field
+    \\  del(.field)          Delete a frontmatter field
+    \\  .field += [values]   Append to frontmatter array
+    \\  replace(text)        Replace body, node, or node range
+    \\  append(text)         Insert text after body, node, or node range
+    \\
+    \\Link validation:
+    \\  exists    Add .exists boolean to link records
+    \\  resolve   Add .path with resolved filesystem path
     \\
     \\Examples:
     \\  md 'frontmatter | .title' notes.md
@@ -21,6 +71,8 @@ const usage =
     \\  md 'frontmatter | set(.draft, false)' -i notes.md
     \\  md 'incoming' --dir ./vault/ notes.md
     \\  md 'stats | .words' notes.md
+    \\
+    \\See md(1) for detailed documentation.
     \\
 ;
 

@@ -1,4 +1,4 @@
-.Dd March 7, 2026
+.Dd March 14, 2026
 .Dt MD 1
 .Os
 .Sh NAME
@@ -30,40 +30,104 @@ for structured output.
 The DSL uses pipelines to chain operations.
 Each stage receives the output of the previous stage.
 .Ss Extractors
-Extractors pull structured data from the document:
-.Bl -tag -width "frontmatter" -compact
+Extractors pull structured data from the document.
+When piped a string, extractors parse that string
+instead of the original document.
+.Bl -tag -width "frontmatter"
 .It Ic frontmatter
 YAML or TOML frontmatter as a record.
+Fields depend on the document content.
+Returns null if no frontmatter is present.
 .It Ic body
-Document body without frontmatter.
+Document body without frontmatter, as a string.
 .It Ic headings
-Headings with depth, text, and line number.
+Array of ATX headings.
+Each record contains:
+.Li .depth
+(integer 1\(en6),
+.Li .text
+(heading text without leading hashes),
+.Li .line
+(line number).
 .It Ic links
-Links with kind, target, text, and line number.
-Kinds: standard, wikilink, image, embed.
+Array of links found in the document.
+Each record contains:
+.Li .kind
+(standard, wikilink, image, or embed),
+.Li .target
+(URL or link target),
+.Li .text
+(display text),
+.Li .line
+(line number).
 .It Ic tags
-Inline tags with name and line number.
+Deduplicated array of inline
+.Li #tag
+occurrences.
+Each record contains:
+.Li .name
+and
+.Li .line .
 .It Ic codeblocks
-Code blocks with language, content, start/end lines.
+Array of fenced and indented code blocks.
+Each record contains:
+.Li .language ,
+.Li .content ,
+.Li .start_line ,
+.Li .end_line .
 .It Ic stats
-Word and line counts.
+Word and line counts for the document body (excluding frontmatter).
+Record contains:
+.Li .lines
+and
+.Li .words .
 .It Ic comments
-HTML and Obsidian comments with kind, text, and line.
+Array of HTML and Obsidian comments.
+Each record contains:
+.Li .kind
+(html or obsidian),
+.Li .text ,
+.Li .line .
 .It Ic footnotes
-Footnote definitions with label, text, and line.
+Array of footnote definitions.
+Each record contains:
+.Li .label ,
+.Li .text ,
+.Li .line .
 .It Ic nodes
-Block-level document nodes with type, text, line, and source.
-Types: heading, paragraph, codeblock, comment, footnote.
-Type-specific fields: depth, language, kind, label.
+Array of block-level document nodes.
+Each record contains:
+.Li .type
+(heading, paragraph, codeblock, comment, or footnote),
+.Li .text ,
+.Li .line ,
+.Li .source .
+Type-specific fields:
+.Li .depth
+for headings,
+.Li .language
+for codeblocks,
+.Li .kind
+for comments,
+.Li .label
+for footnotes.
 The
 .Li .source
-field covers the full block extent (structural syntax + content + trailing whitespace).
+field covers the full block extent
+(structural syntax + content + trailing whitespace).
 Consecutive nodes' sources tile contiguously across the body.
 .It Ic incoming
-Files linking to the input file. Requires
+Array of files linking to the input file.
+Requires
 .Fl -dir
 or a file argument.
-Returns source path, link kind, and line.
+Each record contains:
+.Li .source
+(path of the linking file),
+.Li .kind
+(link kind),
+.Li .line
+(line number in the source file).
 .El
 .Ss Field Access
 Use
@@ -71,84 +135,131 @@ Use
 to access record fields. Nested access:
 .Li .author.name .
 .Ss Filtering
-.Ic select(predicate)
-filters arrays.
+.Bl -tag -width "skip_until(pred)"
+.It Ic select(predicate)
+Filter arrays by predicate.
+When applied to a single value, returns the value if the predicate
+is true, or null otherwise.
 Predicates support comparisons
 .Pq Li "==, !=, <, >, <=, >=" ,
 boolean logic
 .Pq Li "and, or, not" ,
 and string functions
 .Pq Li "contains(), startswith()" .
+.It Ic skip_until(predicate)
+Drop array elements until the predicate matches.
+The matching element is excluded; elements after it are returned.
+.It Ic take_until(predicate)
+Take array elements until the predicate matches.
+The matching element is excluded.
+If no element matches, the entire array is returned.
+.El
 .Pp
-.Ic skip_until(predicate)
-drops array elements until the predicate matches (exclusive of the match).
-.Ic take_until(predicate)
-takes array elements until the predicate matches (exclusive of the match).
-These compose for positional queries on
+.Ic skip_until
+and
+.Ic take_until
+compose for positional queries on
 .Ic nodes .
+.Ss Predicate Functions
+.Bl -tag -width "startswith(.field, prefix)"
+.It Ic contains(.field, substring)
+Test whether a string field contains the given substring.
+Returns a boolean.
+.It Ic startswith(.field, prefix)
+Test whether a string field starts with the given prefix.
+Returns a boolean.
+.El
 .Ss List Operations
-.Bl -tag -width "group(.field)" -compact
+.Bl -tag -width "group(.field)"
 .It Ic first
-First element.
+First element of an array.
+Returns null for an empty array.
+On non-array input, returns the input unchanged.
 .It Ic last
-Last element.
+Last element of an array.
+Returns null for an empty array.
+On non-array input, returns the input unchanged.
 .It Ic count
-Length of an array, string, or record.
+Length of an array, string (byte count), or record (number of keys).
+Returns 1 for other types.
 .It Ic reverse
-Reverse order.
+Reverse the order of an array.
+On non-array input, returns the input unchanged.
 .It Ic map(.field)
-Extract a field from each element.
+Extract a field from each element of an array.
+Returns an array of the extracted values.
 .It Ic unique
-Deduplicate values.
+Remove duplicate values from an array.
+Preserves the order of first occurrences.
 .It Ic sort(.field)
-Sort by field.
+Sort an array by a field value.
+On non-array input, returns the input unchanged.
 .It Ic group(.field)
-Group into a record keyed by field value.
+Group array elements into a record keyed by field value.
+Each key maps to an array of elements sharing that value.
 .El
 .Ss Record Operations
-.Bl -tag -width "has(name)" -compact
+.Bl -tag -width "has(name)"
 .It Ic keys
-List record keys.
+List record keys as an array of strings.
 .It Ic has(name)
-Check if a field exists.
+Check if a record contains a field with the given name.
+Returns a boolean.
 .El
 .Ss Format Conversion
-.Bl -tag -width "yaml" -compact
+.Bl -tag -width "yaml"
 .It Ic yaml
-Record to YAML text, or YAML text to record.
+Convert between records and YAML text.
+When given a record, serializes it to YAML.
+When given a string, parses it as YAML into a record.
 .It Ic toml
-Record to TOML text, or TOML text to record.
+Convert between records and TOML text.
+When given a record, serializes it to TOML.
+When given a string, parses it as TOML into a record.
 .El
 .Ss Mutation
-.Bl -tag -width "set(.field, value)" -compact
+.Bl -tag -width "set(.field, value)"
 .It Ic set(.field, value)
-Set a frontmatter field. Produces the modified document.
+Set a frontmatter field.
+Produces the modified document as a string.
 .It Ic del(.field)
-Delete a frontmatter field. Produces the modified document.
+Delete a frontmatter field.
+Produces the modified document as a string.
 .It Ic .field += [values]
 Append values to a frontmatter array field.
-Produces the modified document.
 If the field is null, creates it with the given array.
 If the field is an array, concatenates the values.
+Produces the modified document as a string.
 .It Ic replace(text)
-Replace a span in the document.
-Works on body strings, single node records, and node arrays.
-Produces the modified document.
+Replace a span in the document with the given text.
+Works on body strings (from
+.Ic body ) ,
+single node records (from
+.Ic nodes | first ) ,
+and node arrays (from
+.Ic nodes | take_until(...) ) .
+Produces the modified document as a string.
 .It Ic append(text)
 Insert text after a span in the document.
 Works on body strings, single node records, and node arrays.
-Produces the modified document.
+Produces the modified document as a string.
 .El
 .Ss Link Validation
-.Bl -tag -width "resolve" -compact
+These functions require
+.Fl -dir
+or a file argument to resolve paths.
+.Bl -tag -width "resolve"
 .It Ic exists
-Add
+Add an
 .Li .exists
-boolean to link records.
+boolean field to each link record, indicating whether the link target
+exists on disk.
+Accepts a single link record or an array of link records.
 .It Ic resolve
-Add
+Add a
 .Li .path
-with the resolved filesystem path.
+field to each link record with the resolved filesystem path.
+Accepts a single link record or an array of link records.
 .El
 .Ss Comma Operator
 Multiple outputs from the same input:

@@ -141,6 +141,12 @@ pub fn editFields(allocator: std.mem.Allocator, content: []const u8, ops: []cons
 
             if (!deleted) {
                 try result.appendSlice(allocator, line);
+            } else if (!is_toml) {
+                // Skip YAML continuation lines (indented lines belonging
+                // to this key's multi-line value: block sequences, nested mappings)
+                while (pos < fm.raw.len and (fm.raw[pos] == ' ' or fm.raw[pos] == '\t')) {
+                    pos = nextLine(fm.raw, pos);
+                }
             }
         }
 
@@ -386,6 +392,27 @@ test "deleteField: no frontmatter returns unchanged" {
     const result = try deleteField(std.testing.allocator, input, "title");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings(input, result);
+}
+
+test "deleteField: remove key with block sequence value" {
+    const input = "---\ntitle: Architecture Overview\nstatus: draft\nreviewers:\n  - alice\n  - bob\n---\n";
+    const result = try deleteField(std.testing.allocator, input, "reviewers");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Architecture Overview\nstatus: draft\n---\n", result);
+}
+
+test "deleteField: remove key with nested mapping value" {
+    const input = "---\ntitle: Hello\nauthor:\n  name: Alice\n  email: alice@example.com\ntags: [a, b]\n---\nBody\n";
+    const result = try deleteField(std.testing.allocator, input, "author");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\ntags: [a, b]\n---\nBody\n", result);
+}
+
+test "setField: replace key with block sequence value" {
+    const input = "---\ntitle: Hello\nreviewers:\n  - alice\n  - bob\n---\nBody\n";
+    const result = try setField(std.testing.allocator, input, "reviewers", "[charlie]");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\nreviewers: [charlie]\n---\nBody\n", result);
 }
 
 // editFields tests

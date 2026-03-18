@@ -3157,6 +3157,21 @@ test "incoming returns empty when no links" {
     try testing.expectEqual(@as(usize, 0), val.array.len);
 }
 
+test "incoming finds embed links" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "target.md", "# Target\nSome content.\n");
+    try writeTestFile(tmp.dir, "linker.md", "![[target]]\n");
+
+    const target = try std.fs.path.join(alloc, &.{ tmp.path, "target.md" });
+    const val = testEvalWithPaths("incoming", "# Target\n", target, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("embed", val.array[0].record.get("kind").?.string);
+}
+
 test "incoming without file_path produces error" {
     const val = testEvalWithPaths("incoming", "content\n", null, null);
     try testing.expect(val == null);

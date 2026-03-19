@@ -1039,13 +1039,20 @@ pub const Evaluator = struct {
             self.fileDir();
 
         const dir_path = base_dir orelse return false;
-        var dir = std.fs.cwd().openDir(dir_path, .{}) catch return false;
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = is_wiki }) catch return false;
         defer dir.close();
 
         if (dir.statFile(path)) |_| return true else |_| {}
 
         const with_md = std.fmt.allocPrint(self.arena, "{s}.md", .{path}) catch return false;
         if (dir.statFile(with_md)) |_| return true else |_| {}
+
+        // For wikilinks/embeds, search subdirectories by basename
+        // (matches Obsidian's vault-wide resolution)
+        if (is_wiki) {
+            if (findFileRecursive(self.arena, dir, path) != null) return true;
+            if (findFileRecursive(self.arena, dir, with_md) != null) return true;
+        }
 
         return false;
     }
@@ -1146,7 +1153,7 @@ pub const Evaluator = struct {
             self.fileDir();
 
         const dir_str = base_dir orelse return target;
-        var dir = std.fs.cwd().openDir(dir_str, .{}) catch return target;
+        var dir = std.fs.cwd().openDir(dir_str, .{ .iterate = is_wiki }) catch return target;
         defer dir.close();
         if (dir.statFile(path)) |_| {
             return std.fs.path.join(self.arena, &.{ dir_str, path }) catch return target;
@@ -1156,6 +1163,17 @@ pub const Evaluator = struct {
         if (dir.statFile(with_md)) |_| {
             return std.fs.path.join(self.arena, &.{ dir_str, with_md }) catch return target;
         } else |_| {}
+
+        // For wikilinks/embeds, search subdirectories by basename
+        // (matches Obsidian's vault-wide resolution)
+        if (is_wiki) {
+            if (findFileRecursive(self.arena, dir, path)) |rel_path| {
+                return std.fs.path.join(self.arena, &.{ dir_str, rel_path }) catch return target;
+            }
+            if (findFileRecursive(self.arena, dir, with_md)) |rel_path| {
+                return std.fs.path.join(self.arena, &.{ dir_str, rel_path }) catch return target;
+            }
+        }
 
         return target;
     }
@@ -1459,6 +1477,21 @@ fn isMarkdownFile(name: []const u8) bool {
         std.mem.endsWith(u8, name, ".markdown") or
         std.mem.endsWith(u8, name, ".Markdown") or
         std.mem.endsWith(u8, name, ".MARKDOWN");
+}
+
+/// Walk a directory recursively looking for a file by basename.
+/// Returns the relative path within the directory if found, null otherwise.
+fn findFileRecursive(arena: std.mem.Allocator, dir: std.fs.Dir, basename: []const u8) ?[]const u8 {
+    var walker = dir.walk(arena) catch return null;
+    defer walker.deinit();
+    while (true) {
+        const entry = walker.next() catch continue orelse break;
+        if (entry.kind != .file) continue;
+        if (std.mem.eql(u8, entry.basename, basename)) {
+            return arena.dupe(u8, entry.path) catch return null;
+        }
+    }
+    return null;
 }
 
 fn renderRecordAsYaml(
@@ -3273,7 +3306,57 @@ test "exists with select filters broken links" {
     try testing.expectEqualStrings("bad", val.array[0].record.get("target").?.string);
 }
 
+test "exists finds wikilink target in subdirectory" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try tmp.dir.makeDir("sub");
+    try writeTestFile(tmp.dir, "sub/target.md", "# Target\n");
+
+    const doc = "See [[target]].\n";
+    const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
+    const val = testEvalWithPaths("links | exists", doc, fp, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqual(true, val.array[0].record.get("exists").?.bool);
+}
+
+test "exists finds embed target in subdirectory" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try tmp.dir.makeDir("files");
+    try writeTestFile(tmp.dir, "files/image.jpg", "fake image");
+
+    const doc = "![[image.jpg]]\n";
+    const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
+    const val = testEvalWithPaths("links | exists", doc, fp, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqual(true, val.array[0].record.get("exists").?.bool);
+}
+
 // resolve tests
+
+test "resolve finds wikilink target in subdirectory" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try tmp.dir.makeDir("sub");
+    try writeTestFile(tmp.dir, "sub/target.md", "# Target\n");
+
+    const doc = "See [[target]].\n";
+    const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
+    const val = testEvalWithPaths("links | resolve", doc, fp, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+
+    const resolved = val.array[0].record.get("path").?.string;
+    try testing.expect(std.mem.endsWith(u8, resolved, "sub/target.md"));
+}
 
 test "resolve adds path to link records" {
     const alloc = std.heap.page_allocator;

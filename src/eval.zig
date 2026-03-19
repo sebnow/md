@@ -949,7 +949,8 @@ pub const Evaluator = struct {
             return null;
         };
 
-        const target_basename = std.fs.path.stem(file_path);
+        const target_stem = std.fs.path.stem(file_path);
+        const target_full_basename = std.fs.path.basename(file_path);
         const target_dir = std.fs.path.dirname(file_path);
         const scan_dir_path = self.dir_path orelse target_dir orelse ".";
 
@@ -964,7 +965,7 @@ pub const Evaluator = struct {
         defer dir.close();
 
         var results = std.ArrayListUnmanaged(Value).empty;
-        scanIncoming(self.arena, dir, scan_dir_path, file_path, target_basename, &results) catch @panic("out of memory");
+        scanIncoming(self.arena, dir, scan_dir_path, file_path, target_stem, target_full_basename, &results) catch @panic("out of memory");
         return .{ .array = results.toOwnedSlice(self.arena) catch @panic("out of memory") };
     }
 
@@ -1372,6 +1373,7 @@ fn scanIncoming(
     dir: std.fs.Dir,
     dir_path: []const u8,
     target_path: []const u8,
+    target_stem: []const u8,
     target_basename: []const u8,
     results: *std.ArrayListUnmanaged(Value),
 ) std.mem.Allocator.Error!void {
@@ -1403,7 +1405,7 @@ fn scanIncoming(
 
         const links = md.links.parse(scratch_alloc, content) catch continue;
         for (links) |link| {
-            if (linkMatchesTarget(scratch_alloc, link, target_path, target_basename, source_path)) {
+            if (linkMatchesTarget(scratch_alloc, link, target_path, target_stem, target_basename, source_path)) {
                 const source = try arena.dupe(u8, source_path);
                 const val = recordFromPairs(arena, &.{
                     .{ "source", .{ .string = source } },
@@ -1420,6 +1422,7 @@ fn linkMatchesTarget(
     arena: std.mem.Allocator,
     link: md.links.Link,
     target_path: []const u8,
+    target_stem: []const u8,
     target_basename: []const u8,
     source_path: []const u8,
 ) bool {
@@ -1430,7 +1433,7 @@ fn linkMatchesTarget(
             link_target[0..hash_pos]
         else
             link_target;
-        return std.mem.eql(u8, name, target_basename);
+        return std.mem.eql(u8, name, target_stem) or std.mem.eql(u8, name, target_basename);
     }
 
     const source_dir = std.fs.path.dirname(source_path) orelse ".";
@@ -3170,6 +3173,36 @@ test "incoming finds embed links" {
     try testing.expect(val == .array);
     try testing.expectEqual(@as(usize, 1), val.array.len);
     try testing.expectEqualStrings("embed", val.array[0].record.get("kind").?.string);
+}
+
+test "incoming finds embeds targeting non-md files" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "image.jpg", "not a real image");
+    try writeTestFile(tmp.dir, "note.md", "Look at this:\n![[image.jpg]]\n");
+
+    const target = try std.fs.path.join(alloc, &.{ tmp.path, "image.jpg" });
+    const val = testEvalWithPaths("incoming", "", target, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("embed", val.array[0].record.get("kind").?.string);
+}
+
+test "incoming finds wikilinks with explicit extension" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "target.md", "# Target\n");
+    try writeTestFile(tmp.dir, "linker.md", "See [[target.md]] for details.\n");
+
+    const target = try std.fs.path.join(alloc, &.{ tmp.path, "target.md" });
+    const val = testEvalWithPaths("incoming", "# Target\n", target, tmp.path).?;
+    try testing.expect(val == .array);
+    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqualStrings("wikilink", val.array[0].record.get("kind").?.string);
 }
 
 test "incoming without file_path produces error" {

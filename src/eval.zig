@@ -1396,7 +1396,10 @@ fn scanIncoming(
         defer _ = scratch.reset(.retain_capacity);
         const scratch_alloc = scratch.allocator();
 
-        const source_path = std.fs.path.join(scratch_alloc, &.{ dir_path, entry.path }) catch continue;
+        const source_path = if (std.mem.eql(u8, dir_path, "."))
+            entry.path
+        else
+            std.fs.path.join(scratch_alloc, &.{ dir_path, entry.path }) catch continue;
         if (std.mem.eql(u8, source_path, target_path)) continue;
 
         const file = dir.openFile(entry.path, .{}) catch continue;
@@ -3203,6 +3206,22 @@ test "incoming finds wikilinks with explicit extension" {
     try testing.expect(val == .array);
     try testing.expectEqual(@as(usize, 1), val.array.len);
     try testing.expectEqualStrings("wikilink", val.array[0].record.get("kind").?.string);
+}
+
+test "scanIncoming source paths have no ./ prefix" {
+    const alloc = std.heap.page_allocator;
+    const tmp = try setupTestDir(alloc);
+    defer std.fs.cwd().deleteTree(tmp.path) catch {};
+
+    try writeTestFile(tmp.dir, "target.md", "# Target\n");
+    try writeTestFile(tmp.dir, "linker.md", "See [[target]] for details.\n");
+
+    var results = std.ArrayListUnmanaged(Value).empty;
+    try scanIncoming(alloc, tmp.dir, ".", "./target.md", "target", "target.md", &results);
+    try testing.expectEqual(@as(usize, 1), results.items.len);
+
+    const source = results.items[0].record.get("source").?.string;
+    try testing.expect(!std.mem.startsWith(u8, source, "./"));
 }
 
 test "incoming without file_path produces error" {

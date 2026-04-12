@@ -313,7 +313,11 @@ pub const Evaluator = struct {
         for (arr.items, 0..) |item, idx| {
             const pred_val = self.evalWithInput(predicate, item) orelse continue;
             if (isTruthy(pred_val)) {
-                return .{ .array = .{ .items = arr.items[0..idx] } };
+                const source = if (idx == 0) getRecordSource(item) else null;
+                return .{ .array = .{
+                    .items = arr.items[0..idx],
+                    .source = if (source) |s| s[0..0] else null,
+                } };
             }
         }
         return .{ .array = arr };
@@ -705,7 +709,10 @@ pub const Evaluator = struct {
             },
             .array => |arr| {
                 if (arr.items.len == 0) {
-                    self.setError("replace/append: empty array", 0);
+                    if (arr.source) |src| {
+                        if (sliceOffset(self.content, src)) |off| return off;
+                    }
+                    self.setError("replace/append: empty array with no positional context", 0);
                     return null;
                 }
                 const first_source = self.getSourceFromValue(arr.items[0]) orelse return null;
@@ -1863,6 +1870,18 @@ fn compareValues(a: Value, b: Value) ?std.math.Order {
             const bi: u1 = @intFromBool(b.bool);
             return std.math.order(ai, bi);
         },
+        else => null,
+    };
+}
+
+fn getRecordSource(val: Value) ?[]const u8 {
+    const rec = switch (val) {
+        .record => |r| r,
+        else => return null,
+    };
+    const source_val = rec.get("source") orelse return null;
+    return switch (source_val) {
+        .string => |s| s,
         else => null,
     };
 }
@@ -3847,7 +3866,7 @@ test "replace: error without input" {
     try testing.expect(evaluator.err != null);
 }
 
-test "replace: error on empty array" {
+test "replace: error on empty array without positional context" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const alloc = arena.allocator();
     var p = Parser.init(alloc, "nodes | select(.type == \"codeblock\") | replace(\"x\")");
@@ -3856,6 +3875,24 @@ test "replace: error on empty array" {
     const result = evaluator.eval(node);
     try testing.expect(result == null);
     try testing.expect(evaluator.err != null);
+}
+
+test "replace: empty range from take_until inserts content" {
+    const doc = "# A\n# B\nText B.\n";
+    const val = testEval(
+        "nodes | skip_until(.text == \"A\") | take_until(.type == \"heading\" and .text == \"B\") | replace(\"Inserted.\\n\")",
+        doc,
+    ).?;
+    try testing.expectEqualStrings("# A\nInserted.\n# B\nText B.\n", val.string);
+}
+
+test "append: empty range from take_until inserts content" {
+    const doc = "# A\n# B\nText B.\n";
+    const val = testEval(
+        "nodes | skip_until(.text == \"A\") | take_until(.type == \"heading\" and .text == \"B\") | append(\"Inserted.\\n\")",
+        doc,
+    ).?;
+    try testing.expectEqualStrings("# A\nInserted.\n# B\nText B.\n", val.string);
 }
 
 test "replace: error on non-string argument" {

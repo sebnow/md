@@ -26,6 +26,9 @@ If no file is given, reads from stdin.
 ## Extractors
 
 Extractors pull structured data from the document.
+Most extractors include a `.source` field —
+a slice of the original document covering the element's raw syntax.
+This enables `replace()` and `append()` mutations from any extractor.
 
 ```sh
 # YAML frontmatter as a record
@@ -34,25 +37,25 @@ md 'frontmatter' notes.md
 # Document body without frontmatter
 md 'body' notes.md
 
-# Headings with depth and line number
+# Headings: .depth, .text, .line, .source
 md 'headings' notes.md
 
-# Links (standard, wikilink, image, embed)
+# Links: .kind, .target, .text, .line, .source
 md 'links' notes.md
 
-# Inline tags
+# Inline tags: .name, .line, .source
 md 'tags' notes.md
 
-# Fenced and indented code blocks
+# Fenced and indented code blocks: .language, .content, .start_line, .end_line, .source
 md 'codeblocks' notes.md
 
-# Word and line counts
+# Word and line counts: .lines, .words
 md 'stats' notes.md
 
-# HTML and Obsidian comments
+# HTML and Obsidian comments: .kind, .text, .line, .source
 md 'comments' notes.md
 
-# Footnote definitions
+# Footnote definitions: .label, .text, .line, .source
 md 'footnotes' notes.md
 
 # Files linking to this one (scans directory)
@@ -161,10 +164,11 @@ md 'frontmatter | set(.draft, false)' -i notes.md
 md 'frontmatter | .tags += ["new-tag"]' -i notes.md
 ```
 
-## Body and Node Mutation
+## Body Mutation
 
 `replace()` and `append()` modify the document body.
-They work on body strings, single nodes, and node ranges.
+They work on any value that carries a `.source` field —
+body strings, nodes, headings, links, tags, comments, codeblocks, and footnotes.
 Use `-i` for in-place editing.
 
 ```sh
@@ -186,6 +190,17 @@ md 'nodes | skip_until(.type == "heading" and .text == "Notes")
 md 'nodes | skip_until(.type == "heading" and .text == "Notes")
          | take_until(.type == "heading")
          | append("More notes.\n")' -i notes.md
+
+# Replace a heading directly
+md 'headings | first | replace("# New Title")' -i notes.md
+
+# Replace an Obsidian comment
+md 'comments | select(.kind == "obsidian") | first
+             | replace("%% updated %%")' -i notes.md
+
+# Insert content after a comment marker
+md 'comments | select(.text | contains("begin notes"))
+             | first | append("\nNew note.\n")' -i notes.md
 ```
 
 ## Link Validation

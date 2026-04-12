@@ -16,13 +16,13 @@ const usage =
     \\Extractors:
     \\  frontmatter  YAML or TOML frontmatter as a record
     \\  body         Document body without frontmatter (string)
-    \\  headings     Headings array: .depth, .text, .line
-    \\  links        Links array: .kind, .target, .text, .line
-    \\  tags         Inline tags array: .name, .line
-    \\  codeblocks   Code blocks array: .language, .content, .start_line, .end_line
+    \\  headings     Headings array: .depth, .text, .line, .source
+    \\  links        Links array: .kind, .target, .text, .line, .source
+    \\  tags         Inline tags array: .name, .line, .source
+    \\  codeblocks   Code blocks array: .language, .content, .start_line, .end_line, .source
     \\  stats        Word and line counts: .lines, .words
-    \\  comments     Comments array: .kind, .text, .line
-    \\  footnotes    Footnotes array: .label, .text, .line
+    \\  comments     Comments array: .kind, .text, .line, .source
+    \\  footnotes    Footnotes array: .label, .text, .line, .source
     \\  nodes        Block nodes array: .type, .text, .line, .source
     \\               Types: heading, paragraph, codeblock, comment, footnote
     \\               Type-specific: .depth, .language, .kind, .label
@@ -57,8 +57,8 @@ const usage =
     \\  set(.field, value)   Set a frontmatter field
     \\  del(.field)          Delete a frontmatter field
     \\  .field += [values]   Append to frontmatter array
-    \\  replace(text)        Replace body, node, or node range
-    \\  append(text)         Insert text after body, node, or node range
+    \\  replace(text)        Replace span identified by .source
+    \\  append(text)         Insert text after span identified by .source
     \\
     \\Link validation:
     \\  exists    Add .exists boolean to link records

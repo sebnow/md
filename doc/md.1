@@ -48,7 +48,9 @@ Each record contains:
 .Li .text
 (heading text without leading hashes),
 .Li .line
-(line number).
+(line number),
+.Li .source
+(raw heading line).
 .It Ic links
 Array of links found in the document.
 Each record contains:
@@ -59,22 +61,27 @@ Each record contains:
 .Li .text
 (display text),
 .Li .line
-(line number).
+(line number),
+.Li .source
+(raw link syntax).
 .It Ic tags
 Deduplicated array of inline
 .Li #tag
 occurrences.
 Each record contains:
-.Li .name
-and
-.Li .line .
+.Li .name ,
+.Li .line ,
+.Li .source
+(raw tag including #).
 .It Ic codeblocks
 Array of fenced and indented code blocks.
 Each record contains:
 .Li .language ,
 .Li .content ,
 .Li .start_line ,
-.Li .end_line .
+.Li .end_line ,
+.Li .source
+(entire block including fence lines).
 .It Ic stats
 Word and line counts for the document body (excluding frontmatter).
 Record contains:
@@ -87,13 +94,17 @@ Each record contains:
 .Li .kind
 (html or obsidian),
 .Li .text ,
-.Li .line .
+.Li .line ,
+.Li .source
+(raw comment including delimiters).
 .It Ic footnotes
 Array of footnote definitions.
 Each record contains:
 .Li .label ,
 .Li .text ,
-.Li .line .
+.Li .line ,
+.Li .source
+(raw definition line).
 .It Ic nodes
 Array of block-level document nodes.
 Each record contains:
@@ -234,14 +245,17 @@ Produces the modified document as a string.
 Replace a span in the document with the given text.
 Works on body strings (from
 .Ic body ) ,
-single node records (from
-.Ic nodes | first ) ,
-and node arrays (from
-.Ic nodes | take_until(...) ) .
+and any record or array of records with a
+.Li .source
+field \(em including output from
+.Ic nodes , headings , links , tags , codeblocks , comments ,
+and
+.Ic footnotes .
 Produces the modified document as a string.
 .It Ic append(text)
 Insert text after a span in the document.
-Works on body strings, single node records, and node arrays.
+Accepts the same inputs as
+.Ic replace .
 Produces the modified document as a string.
 .El
 .Ss Link Validation
@@ -320,6 +334,12 @@ Append after a section:
 .Pp
 Replace entire body:
 .Dl md 'body | replace(\&"New content.\en\&")' -i notes.md
+.Pp
+Replace a heading directly:
+.Dl md 'headings | first | replace(\&"# New Title\&")' -i notes.md
+.Pp
+Insert content after an Obsidian comment marker:
+.Dl md 'comments | select(contains(.text, \&"begin notes\&")) | first | append(\&"\enNew note.\en\&")' -i notes.md
 .Pp
 Extract content between comment markers:
 .Dl md 'nodes | skip_until(.type == \&"comment\&" and contains(.text, \&"begin\&")) | take_until(.type == \&"comment\&" and contains(.text, \&"end\&"))' notes.md

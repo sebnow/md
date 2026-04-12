@@ -6,8 +6,16 @@ pub const Value = union(enum) {
     float: f64,
     bool: bool,
     null,
-    array: []const Value,
+    array: Array,
     record: Record,
+
+    pub const Array = struct {
+        items: []const Value,
+        /// Source span in the original document. For empty arrays from
+        /// take_until, this preserves the zero-width position at the
+        /// boundary where the range would have been.
+        source: ?[]const u8 = null,
+    };
 
     pub const Record = struct {
         keys: []const []const u8,
@@ -30,7 +38,7 @@ pub const Value = union(enum) {
             .bool => |b| try writer.writeAll(if (b) "true" else "false"),
             .null => try writer.writeAll("null"),
             .array => |arr| {
-                for (arr) |item| {
+                for (arr.items) |item| {
                     try item.renderPlain(writer);
                     try writer.writeByte('\n');
                 }
@@ -59,7 +67,7 @@ pub const Value = union(enum) {
             .null => try writer.writeAll("null"),
             .array => |arr| {
                 try writer.writeByte('[');
-                for (arr, 0..) |item, idx| {
+                for (arr.items, 0..) |item, idx| {
                     if (idx > 0) try writer.writeByte(',');
                     try item.renderJson(writer);
                 }
@@ -91,8 +99,8 @@ pub const Value = union(enum) {
             .bool => |b| b == other.bool,
             .null => true,
             .array => |arr| {
-                if (arr.len != other.array.len) return false;
-                for (arr, other.array) |a, b| {
+                if (arr.items.len != other.array.items.len) return false;
+                for (arr.items, other.array.items) |a, b| {
                     if (!a.eql(b)) return false;
                 }
                 return true;
@@ -234,7 +242,7 @@ test "array plain" {
         .{ .string = "alpha" },
         .{ .string = "beta" },
     };
-    const val: Value = .{ .array = &items };
+    const val: Value = .{ .array = .{ .items = &items } };
     const out = try renderPlainAlloc(testing.allocator, val);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("alpha\nbeta\n", out);
@@ -246,14 +254,14 @@ test "array json" {
         .{ .string = "two" },
         .{ .bool = true },
     };
-    const val: Value = .{ .array = &items };
+    const val: Value = .{ .array = .{ .items = &items } };
     const out = try renderJsonAlloc(testing.allocator, val);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("[1,\"two\",true]", out);
 }
 
 test "empty array json" {
-    const val: Value = .{ .array = &.{} };
+    const val: Value = .{ .array = .{ .items = &.{} } };
     const out = try renderJsonAlloc(testing.allocator, val);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("[]", out);
@@ -302,7 +310,7 @@ test "record get missing key" {
 test "nested array in record json" {
     const inner = [_]Value{ .{ .string = "x" }, .{ .string = "y" } };
     const keys = [_][]const u8{"items"};
-    const vals = [_]Value{.{ .array = &inner }};
+    const vals = [_]Value{.{ .array = .{ .items = &inner } }};
     const val: Value = .{ .record = .{ .keys = &keys, .values = &vals } };
     const out = try renderJsonAlloc(testing.allocator, val);
     defer testing.allocator.free(out);
@@ -328,8 +336,8 @@ test "eql arrays" {
     const a = [_]Value{ .{ .int = 1 }, .{ .int = 2 } };
     const b = [_]Value{ .{ .int = 1 }, .{ .int = 2 } };
     const c = [_]Value{ .{ .int = 1 }, .{ .int = 3 } };
-    try testing.expect((Value{ .array = &a }).eql(.{ .array = &b }));
-    try testing.expect(!(Value{ .array = &a }).eql(.{ .array = &c }));
+    try testing.expect((Value{ .array = .{ .items = &a } }).eql(.{ .array = .{ .items = &b } }));
+    try testing.expect(!(Value{ .array = .{ .items = &a } }).eql(.{ .array = .{ .items = &c } }));
 }
 
 test "json control character escaping" {

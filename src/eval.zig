@@ -245,14 +245,14 @@ pub const Evaluator = struct {
         switch (inp) {
             .array => |arr| {
                 var results = std.ArrayListUnmanaged(Value).empty;
-                for (arr) |item| {
+                for (arr.items) |item| {
                     const pred_val = self.evalWithInput(predicate, item) orelse continue;
                     if (isTruthy(pred_val)) {
                         results.append(self.arena, item) catch @panic("out of memory");
                     }
                 }
                 const slice = results.toOwnedSlice(self.arena) catch @panic("out of memory");
-                return .{ .array = slice };
+                return .{ .array = .{ .items = slice } };
             },
             else => {
                 // select on a single value: return it if predicate is true, null otherwise
@@ -282,13 +282,13 @@ pub const Evaluator = struct {
             },
         };
 
-        for (arr, 0..) |item, idx| {
+        for (arr.items, 0..) |item, idx| {
             const pred_val = self.evalWithInput(predicate, item) orelse continue;
             if (isTruthy(pred_val)) {
-                return .{ .array = arr[idx + 1 ..] };
+                return .{ .array = .{ .items = arr.items[idx + 1 ..] } };
             }
         }
-        return .{ .array = &.{} };
+        return .{ .array = .{ .items = &.{} } };
     }
 
     fn evalTakeUntil(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
@@ -310,10 +310,10 @@ pub const Evaluator = struct {
             },
         };
 
-        for (arr, 0..) |item, idx| {
+        for (arr.items, 0..) |item, idx| {
             const pred_val = self.evalWithInput(predicate, item) orelse continue;
             if (isTruthy(pred_val)) {
-                return .{ .array = arr[0..idx] };
+                return .{ .array = .{ .items = arr.items[0..idx] } };
             }
         }
         return .{ .array = arr };
@@ -366,7 +366,7 @@ pub const Evaluator = struct {
     fn evalFirst(self: *Evaluator, input: Value) ?Value {
         _ = self;
         return switch (input) {
-            .array => |arr| if (arr.len > 0) arr[0] else .null,
+            .array => |arr| if (arr.items.len > 0) arr.items[0] else .null,
             else => input,
         };
     }
@@ -374,7 +374,7 @@ pub const Evaluator = struct {
     fn evalLast(self: *Evaluator, input: Value) ?Value {
         _ = self;
         return switch (input) {
-            .array => |arr| if (arr.len > 0) arr[arr.len - 1] else .null,
+            .array => |arr| if (arr.items.len > 0) arr.items[arr.items.len - 1] else .null,
             else => input,
         };
     }
@@ -382,7 +382,7 @@ pub const Evaluator = struct {
     fn evalCount(self: *Evaluator, input: Value) ?Value {
         _ = self;
         return switch (input) {
-            .array => |arr| .{ .int = @intCast(arr.len) },
+            .array => |arr| .{ .int = @intCast(arr.items.len) },
             .string => |s| .{ .int = @intCast(s.len) },
             .record => |rec| .{ .int = @intCast(rec.keys.len) },
             else => .{ .int = 1 },
@@ -396,7 +396,7 @@ pub const Evaluator = struct {
         };
 
         var results = std.ArrayListUnmanaged(Value).empty;
-        for (arr) |item| {
+        for (arr.items) |item| {
             var found = false;
             for (results.items) |existing| {
                 if (item.eql(existing)) {
@@ -409,7 +409,7 @@ pub const Evaluator = struct {
             }
         }
         const slice = results.toOwnedSlice(self.arena) catch @panic("out of memory");
-        return .{ .array = slice };
+        return .{ .array = .{ .items = slice } };
     }
 
     fn evalReverse(self: *Evaluator, input: Value) ?Value {
@@ -418,11 +418,11 @@ pub const Evaluator = struct {
             else => return input,
         };
 
-        const reversed = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
-        for (arr, 0..) |item, idx| {
-            reversed[arr.len - 1 - idx] = item;
+        const reversed = self.arena.alloc(Value, arr.items.len) catch @panic("out of memory");
+        for (arr.items, 0..) |item, idx| {
+            reversed[arr.items.len - 1 - idx] = item;
         }
-        return .{ .array = reversed };
+        return .{ .array = .{ .items = reversed } };
     }
 
     fn evalMap(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
@@ -442,11 +442,11 @@ pub const Evaluator = struct {
             },
         };
 
-        const results = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
-        for (arr, 0..) |item, idx| {
+        const results = self.arena.alloc(Value, arr.items.len) catch @panic("out of memory");
+        for (arr.items, 0..) |item, idx| {
             results[idx] = self.evalWithInput(fc.args[0], item) orelse .null;
         }
-        return .{ .array = results };
+        return .{ .array = .{ .items = results } };
     }
 
     fn evalSort(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
@@ -468,8 +468,8 @@ pub const Evaluator = struct {
         // Schwartzian transform: pre-compute keys once (O(n)) instead of
         // re-evaluating per comparison (O(n log n)).
         const KeyVal = struct { key: Value, val: Value };
-        const pairs = self.arena.alloc(KeyVal, arr.len) catch @panic("out of memory");
-        for (arr, 0..) |item, idx| {
+        const pairs = self.arena.alloc(KeyVal, arr.items.len) catch @panic("out of memory");
+        for (arr.items, 0..) |item, idx| {
             pairs[idx] = .{
                 .key = self.evalWithInput(key_expr, item) orelse .null,
                 .val = item,
@@ -482,11 +482,11 @@ pub const Evaluator = struct {
             }
         }.lessThan);
 
-        const sorted = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
+        const sorted = self.arena.alloc(Value, arr.items.len) catch @panic("out of memory");
         for (pairs, 0..) |p, idx| {
             sorted[idx] = p.val;
         }
-        return .{ .array = sorted };
+        return .{ .array = .{ .items = sorted } };
     }
 
     fn evalGroup(self: *Evaluator, fc: Node.FnCall, input: ?Value) ?Value {
@@ -509,7 +509,7 @@ pub const Evaluator = struct {
         var group_keys = std.ArrayListUnmanaged(Value).empty;
         var group_items = std.ArrayListUnmanaged(std.ArrayListUnmanaged(Value)).empty;
 
-        for (arr) |item| {
+        for (arr.items) |item| {
             const key_val = self.evalWithInput(key_expr, item) orelse .null;
 
             var found_idx: ?usize = null;
@@ -546,7 +546,7 @@ pub const Evaluator = struct {
             };
             var items_list = group_items.items[idx];
             const slice = items_list.toOwnedSlice(self.arena) catch @panic("out of memory");
-            vals[idx] = .{ .array = slice };
+            vals[idx] = .{ .array = .{ .items = slice } };
         }
 
         return .{ .record = .{ .keys = keys, .values = vals } };
@@ -704,12 +704,12 @@ pub const Evaluator = struct {
                 return null;
             },
             .array => |arr| {
-                if (arr.len == 0) {
+                if (arr.items.len == 0) {
                     self.setError("replace/append: empty array", 0);
                     return null;
                 }
-                const first_source = self.getSourceFromValue(arr[0]) orelse return null;
-                const last_source = self.getSourceFromValue(arr[arr.len - 1]) orelse return null;
+                const first_source = self.getSourceFromValue(arr.items[0]) orelse return null;
+                const last_source = self.getSourceFromValue(arr.items[arr.items.len - 1]) orelse return null;
                 const first_off = sliceOffset(self.content, first_source) orelse {
                     self.setError("replace/append: .source is not a subslice of the document", 0);
                     return null;
@@ -760,7 +760,7 @@ pub const Evaluator = struct {
                 for (rec.keys, 0..) |key, idx| {
                     items[idx] = .{ .string = key };
                 }
-                return .{ .array = items };
+                return .{ .array = .{ .items = items } };
             },
             else => return .null,
         }
@@ -863,7 +863,7 @@ pub const Evaluator = struct {
         for (parsed, 0..) |h, idx| {
             items[idx] = headingToValue(self.arena, h);
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn extractLinksFrom(self: *Evaluator, content: []const u8) ?Value {
@@ -872,7 +872,7 @@ pub const Evaluator = struct {
         for (parsed, 0..) |l, idx| {
             items[idx] = linkToValue(self.arena, l);
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn extractTagsFrom(self: *Evaluator, content: []const u8) ?Value {
@@ -881,7 +881,7 @@ pub const Evaluator = struct {
         for (parsed, 0..) |t, idx| {
             items[idx] = tagToValue(self.arena, t);
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn extractCodeblocksFrom(self: *Evaluator, content: []const u8) ?Value {
@@ -890,7 +890,7 @@ pub const Evaluator = struct {
         for (parsed, 0..) |b, idx| {
             items[idx] = codeblockToValue(self.arena, b);
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn extractStatsFrom(self: *Evaluator, content: []const u8) ?Value {
@@ -922,7 +922,7 @@ pub const Evaluator = struct {
         for (parsed, 0..) |c, idx| {
             items[idx] = commentToValue(self.arena, c);
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn extractFootnotesFrom(self: *Evaluator, content: []const u8) ?Value {
@@ -931,7 +931,7 @@ pub const Evaluator = struct {
         for (parsed, 0..) |f, idx| {
             items[idx] = footnoteToValue(self.arena, f);
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn extractNodesFrom(self: *Evaluator, content: []const u8) ?Value {
@@ -940,7 +940,7 @@ pub const Evaluator = struct {
         for (parsed, 0..) |n, idx| {
             items[idx] = nodeToValue(self.arena, n);
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn extractIncoming(self: *Evaluator) ?Value {
@@ -966,17 +966,17 @@ pub const Evaluator = struct {
 
         var results = std.ArrayListUnmanaged(Value).empty;
         scanIncoming(self.arena, dir, scan_dir_path, file_path, target_stem, target_full_basename, &results) catch @panic("out of memory");
-        return .{ .array = results.toOwnedSlice(self.arena) catch @panic("out of memory") };
+        return .{ .array = .{ .items = results.toOwnedSlice(self.arena) catch @panic("out of memory") } };
     }
 
     fn evalExists(self: *Evaluator, input: Value) ?Value {
         switch (input) {
             .array => |arr| {
-                const items = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
-                for (arr, 0..) |item, idx| {
+                const items = self.arena.alloc(Value, arr.items.len) catch @panic("out of memory");
+                for (arr.items, 0..) |item, idx| {
                     items[idx] = self.addExistsField(item) orelse return null;
                 }
-                return .{ .array = items };
+                return .{ .array = .{ .items = items } };
             },
             .record => return self.addExistsField(input),
             else => {
@@ -1064,11 +1064,11 @@ pub const Evaluator = struct {
     fn evalResolve(self: *Evaluator, input: Value) ?Value {
         switch (input) {
             .array => |arr| {
-                const items = self.arena.alloc(Value, arr.len) catch @panic("out of memory");
-                for (arr, 0..) |item, idx| {
+                const items = self.arena.alloc(Value, arr.items.len) catch @panic("out of memory");
+                for (arr.items, 0..) |item, idx| {
                     items[idx] = self.addResolvedField(item) orelse return null;
                 }
-                return .{ .array = items };
+                return .{ .array = .{ .items = items } };
             },
             .record => return self.addResolvedField(input),
             else => {
@@ -1231,7 +1231,7 @@ pub const Evaluator = struct {
         const new_items = right_val orelse return null;
 
         const new_arr = switch (new_items) {
-            .array => |a| a,
+            .array => |a| a.items,
             else => {
                 self.setError("+= right side must be an array", 0);
                 return null;
@@ -1265,9 +1265,9 @@ pub const Evaluator = struct {
         const result_arr = if (existing) |ex| switch (ex) {
             .array => |old| blk: {
                 // Concatenate
-                const combined = self.arena.alloc(Value, old.len + new_arr.len) catch @panic("out of memory");
-                @memcpy(combined[0..old.len], old);
-                @memcpy(combined[old.len..], new_arr);
+                const combined = self.arena.alloc(Value, old.items.len + new_arr.len) catch @panic("out of memory");
+                @memcpy(combined[0..old.items.len], old.items);
+                @memcpy(combined[old.items.len..], new_arr);
                 break :blk combined;
             },
             .null => new_arr,
@@ -1301,7 +1301,7 @@ pub const Evaluator = struct {
         } else .{ .keys = &.{}, .values = &.{} };
 
         // Build new record with the modified field
-        const new_val: Value = .{ .array = arr };
+        const new_val: Value = .{ .array = .{ .items = arr } };
         const updated = self.recordSetField(rec, field_name, new_val) orelse return null;
         rec = updated.record;
 
@@ -1344,7 +1344,7 @@ pub const Evaluator = struct {
         for (c.exprs, 0..) |expr, idx| {
             items[idx] = self.eval(expr) orelse return null;
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn evalCommaWithInput(self: *Evaluator, c: Node.Comma, input: Value) ?Value {
@@ -1352,7 +1352,7 @@ pub const Evaluator = struct {
         for (c.exprs, 0..) |expr, idx| {
             items[idx] = self.evalWithInput(expr, input) orelse return null;
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn evalArrayLit(self: *Evaluator, elements: []const *const Node, input: ?Value) ?Value {
@@ -1364,7 +1364,7 @@ pub const Evaluator = struct {
                 self.eval(elem);
             items[idx] = val orelse return null;
         }
-        return .{ .array = items };
+        return .{ .array = .{ .items = items } };
     }
 
     fn setError(self: *Evaluator, message: []const u8, pos: usize) void {
@@ -1512,7 +1512,7 @@ fn renderRecordAsYaml(
             },
             .array => |arr| {
                 try w.writeByte('\n');
-                for (arr) |item| {
+                for (arr.items) |item| {
                     try writeIndent(w, indent + 2);
                     try w.writeAll("- ");
                     try renderValueAsYamlInline(w, item);
@@ -1537,7 +1537,7 @@ fn renderValueAsYamlInline(writer: anytype, val: Value) !void {
         .null => try writer.writeAll("null"),
         .array => |arr| {
             try writer.writeByte('[');
-            for (arr, 0..) |item, idx| {
+            for (arr.items, 0..) |item, idx| {
                 if (idx > 0) try writer.writeAll(", ");
                 try renderValueAsYamlInline(writer, item);
             }
@@ -1606,7 +1606,7 @@ fn renderValueAsTomlInline(writer: anytype, val: Value) !void {
         .null => try writer.writeAll("\"\""),
         .array => |arr| {
             try writer.writeByte('[');
-            for (arr, 0..) |item, idx| {
+            for (arr.items, 0..) |item, idx| {
                 if (idx > 0) try writer.writeAll(", ");
                 try renderValueAsTomlInline(writer, item);
             }
@@ -1752,7 +1752,7 @@ fn parseTomlArray(arena: std.mem.Allocator, inner: []const u8) Value {
             }
             if (pos < inner.len) pos += 1; // skip closing quote
             items.append(arena, parseTomlValue(arena, inner[start..pos])) catch
-                return .{ .array = &.{} };
+                return .{ .array = .{ .items = &.{} } };
             // Skip comma
             while (pos < inner.len and (inner[pos] == ' ' or inner[pos] == '\t' or inner[pos] == ',')) : (pos += 1) {}
         } else {
@@ -1762,14 +1762,14 @@ fn parseTomlArray(arena: std.mem.Allocator, inner: []const u8) Value {
             while (end > start and (inner[end - 1] == ' ' or inner[end - 1] == '\t')) : (end -= 1) {}
             if (end > start) {
                 items.append(arena, parseTomlValue(arena, inner[start..end])) catch
-                    return .{ .array = &.{} };
+                    return .{ .array = .{ .items = &.{} } };
             }
             if (pos < inner.len) pos += 1; // skip comma
         }
     }
 
-    const slice = items.toOwnedSlice(arena) catch return .{ .array = &.{} };
-    return .{ .array = slice };
+    const slice = items.toOwnedSlice(arena) catch return .{ .array = .{ .items = &.{} } };
+    return .{ .array = .{ .items = slice } };
 }
 
 fn valueToYamlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {
@@ -1874,7 +1874,7 @@ fn isTruthy(v: Value) bool {
         .string => |s| s.len > 0,
         .int => |n| n != 0,
         .float => |f| f != 0.0,
-        .array => |arr| arr.len > 0,
+        .array => |arr| arr.items.len > 0,
         .record => |rec| rec.keys.len > 0,
     };
 }
@@ -2081,7 +2081,7 @@ fn parseBlockSequence(arena: std.mem.Allocator, raw: []const u8, start_pos: usiz
     }
 
     const slice = items.toOwnedSlice(arena) catch @panic("out of memory");
-    return .{ .value = .{ .array = slice }, .pos = pos };
+    return .{ .value = .{ .array = .{ .items = slice } }, .pos = pos };
 }
 
 fn parseNestedMapping(arena: std.mem.Allocator, raw: []const u8, start_pos: usize) ?BlockResult {
@@ -2190,14 +2190,14 @@ fn parseInlineList(arena: std.mem.Allocator, inner: []const u8) Value {
 
         if (item_end > pos) {
             items.append(arena, parseScalarValue(arena, inner[pos..item_end])) catch
-                return .{ .array = &.{} };
+                return .{ .array = .{ .items = &.{} } };
         }
 
         pos = if (end < inner.len) end + 1 else end;
     }
 
-    const slice = items.toOwnedSlice(arena) catch return .{ .array = &.{} };
-    return .{ .array = slice };
+    const slice = items.toOwnedSlice(arena) catch return .{ .array = .{ .items = &.{} } };
+    return .{ .array = .{ .items = slice } };
 }
 
 fn nextLine(content: []const u8, pos: usize) usize {
@@ -2301,9 +2301,9 @@ test "frontmatter int field" {
 test "frontmatter inline list field" {
     const val = testEval("frontmatter | .tags", test_doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
-    try testing.expectEqualStrings("go", val.array[0].string);
-    try testing.expectEqualStrings("zig", val.array[1].string);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
+    try testing.expectEqualStrings("go", val.array.items[0].string);
+    try testing.expectEqualStrings("zig", val.array.items[1].string);
 }
 
 test "frontmatter missing field returns null" {
@@ -2332,8 +2332,8 @@ test "body without frontmatter returns full content" {
 test "headings extracts array" {
     const val = testEval("headings", test_doc).?;
     try testing.expect(val == .array);
-    try testing.expect(val.array.len >= 2);
-    const first = val.array[0];
+    try testing.expect(val.array.items.len >= 2);
+    const first = val.array.items[0];
     try testing.expect(first == .record);
     try testing.expectEqualStrings("Introduction", first.record.get("text").?.string);
     try testing.expectEqual(@as(i64, 1), first.record.get("depth").?.int);
@@ -2348,11 +2348,11 @@ test "headings json" {
 test "links extracts array" {
     const val = testEval("links", test_doc).?;
     try testing.expect(val == .array);
-    try testing.expect(val.array.len >= 2);
+    try testing.expect(val.array.items.len >= 2);
     // Check standard link
     var found_standard = false;
     var found_wikilink = false;
-    for (val.array) |l| {
+    for (val.array.items) |l| {
         const kind = l.record.get("kind").?.string;
         if (std.mem.eql(u8, kind, "standard")) found_standard = true;
         if (std.mem.eql(u8, kind, "wikilink")) found_wikilink = true;
@@ -2364,8 +2364,8 @@ test "links extracts array" {
 test "tags extracts array" {
     const val = testEval("tags", test_doc).?;
     try testing.expect(val == .array);
-    try testing.expect(val.array.len >= 1);
-    const first = val.array[0];
+    try testing.expect(val.array.items.len >= 1);
+    const first = val.array.items[0];
     try testing.expect(first == .record);
     try testing.expectEqualStrings("tagged", first.record.get("name").?.string);
 }
@@ -2373,8 +2373,8 @@ test "tags extracts array" {
 test "codeblocks extracts array" {
     const val = testEval("codeblocks", test_doc).?;
     try testing.expect(val == .array);
-    try testing.expect(val.array.len >= 1);
-    const first = val.array[0];
+    try testing.expect(val.array.items.len >= 1);
+    const first = val.array.items[0];
     try testing.expect(first == .record);
     try testing.expectEqualStrings("go", first.record.get("language").?.string);
     try testing.expectEqualStrings("func main() {}\n", first.record.get("content").?.string);
@@ -2399,35 +2399,35 @@ test "comments extracts array" {
     const doc = "text\n<!-- html comment -->\nmore\n%% obsidian comment %%\n";
     const val = testEval("comments", doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
-    try testing.expectEqualStrings("html", val.array[0].record.get("kind").?.string);
-    try testing.expectEqualStrings("html comment", val.array[0].record.get("text").?.string);
-    try testing.expectEqualStrings("obsidian", val.array[1].record.get("kind").?.string);
-    try testing.expectEqualStrings("obsidian comment", val.array[1].record.get("text").?.string);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
+    try testing.expectEqualStrings("html", val.array.items[0].record.get("kind").?.string);
+    try testing.expectEqualStrings("html comment", val.array.items[0].record.get("text").?.string);
+    try testing.expectEqualStrings("obsidian", val.array.items[1].record.get("kind").?.string);
+    try testing.expectEqualStrings("obsidian comment", val.array.items[1].record.get("text").?.string);
 }
 
 test "comments select by kind" {
     const doc = "<!-- a -->\n%% b %%\n<!-- c -->\n";
     const val = testEval("comments | select(.kind == \"obsidian\")", doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("b", val.array[0].record.get("text").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("b", val.array.items[0].record.get("text").?.string);
 }
 
 test "comments empty document" {
     const val = testEval("comments", "no comments here\n").?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 0), val.array.len);
+    try testing.expectEqual(@as(usize, 0), val.array.items.len);
 }
 
 test "footnotes extracts array" {
     const doc = "Some text.\n\n[^1]: First note\n[^ref]: Second note\n";
     const val = testEval("footnotes", doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
-    try testing.expectEqualStrings("1", val.array[0].record.get("label").?.string);
-    try testing.expectEqualStrings("First note", val.array[0].record.get("text").?.string);
-    try testing.expectEqualStrings("ref", val.array[1].record.get("label").?.string);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
+    try testing.expectEqualStrings("1", val.array.items[0].record.get("label").?.string);
+    try testing.expectEqualStrings("First note", val.array.items[0].record.get("text").?.string);
+    try testing.expectEqualStrings("ref", val.array.items[1].record.get("label").?.string);
 }
 
 test "footnotes field access" {
@@ -2447,15 +2447,15 @@ test "footnotes count" {
 test "footnotes empty document" {
     const val = testEval("footnotes", "no footnotes\n").?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 0), val.array.len);
+    try testing.expectEqual(@as(usize, 0), val.array.items.len);
 }
 
 test "nodes extracts array" {
     const val = testEval("nodes", test_doc).?;
     try testing.expect(val == .array);
-    try testing.expect(val.array.len > 0);
+    try testing.expect(val.array.items.len > 0);
     // First node should be a heading
-    const first = val.array[0];
+    const first = val.array.items[0];
     try testing.expect(first == .record);
     try testing.expectEqualStrings("heading", first.record.get("type").?.string);
     try testing.expectEqualStrings("Introduction", first.record.get("text").?.string);
@@ -2469,7 +2469,7 @@ test "nodes field access on heading" {
 test "nodes select by type" {
     const val = testEval("nodes | select(.type == \"heading\")", test_doc).?;
     try testing.expect(val == .array);
-    for (val.array) |item| {
+    for (val.array.items) |item| {
         try testing.expectEqualStrings("heading", item.record.get("type").?.string);
     }
 }
@@ -2512,15 +2512,15 @@ test "skip_until drops elements before match" {
     const val = testEval("nodes | skip_until(.type == \"heading\" and .text == \"B\")", doc).?;
     try testing.expect(val == .array);
     // Should contain only the paragraph after "# B"
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("paragraph", val.array[0].record.get("type").?.string);
-    try testing.expectEqualStrings("Text B.", val.array[0].record.get("text").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("paragraph", val.array.items[0].record.get("type").?.string);
+    try testing.expectEqualStrings("Text B.", val.array.items[0].record.get("text").?.string);
 }
 
 test "skip_until no match returns empty" {
     const val = testEval("nodes | skip_until(.type == \"codeblock\")", "# Title\n").?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 0), val.array.len);
+    try testing.expectEqual(@as(usize, 0), val.array.items.len);
 }
 
 test "take_until keeps elements before match" {
@@ -2537,15 +2537,15 @@ test "take_until keeps elements before match" {
     const val = testEval("nodes | take_until(.type == \"heading\" and .text == \"B\")", doc).?;
     try testing.expect(val == .array);
     // Should contain heading A and paragraph A
-    try testing.expectEqual(@as(usize, 2), val.array.len);
-    try testing.expectEqualStrings("A", val.array[0].record.get("text").?.string);
-    try testing.expectEqualStrings("Text A.", val.array[1].record.get("text").?.string);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
+    try testing.expectEqualStrings("A", val.array.items[0].record.get("text").?.string);
+    try testing.expectEqualStrings("Text A.", val.array.items[1].record.get("text").?.string);
 }
 
 test "take_until no match returns all" {
     const val = testEval("nodes | take_until(.type == \"codeblock\")", "# Title\n").?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
 }
 
 test "skip_until and take_until compose for section extraction" {
@@ -2569,8 +2569,8 @@ test "skip_until and take_until compose for section extraction" {
         doc,
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("Method details.", val.array[0].record.get("text").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("Method details.", val.array.items[0].record.get("text").?.string);
 }
 
 test "skip_until requires array input" {
@@ -2620,9 +2620,9 @@ test "pipeline three stages" {
 test "comma produces array" {
     const val = testEval("frontmatter | .title, frontmatter | .count", test_doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
-    try testing.expectEqualStrings("Hello World", val.array[0].string);
-    try testing.expectEqual(@as(i64, 42), val.array[1].int);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
+    try testing.expectEqualStrings("Hello World", val.array.items[0].string);
+    try testing.expectEqual(@as(i64, 42), val.array.items[1].int);
 }
 
 test "comparison eq" {
@@ -2641,7 +2641,7 @@ test "no frontmatter returns null" {
 test "empty document" {
     const val = testEval("headings", "").?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 0), val.array.len);
+    try testing.expectEqual(@as(usize, 0), val.array.items.len);
 }
 
 test "frontmatter block sequence" {
@@ -2657,10 +2657,10 @@ test "frontmatter block sequence" {
     ;
     const val = testEval("frontmatter | .items", doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 3), val.array.len);
-    try testing.expectEqualStrings("alpha", val.array[0].string);
-    try testing.expectEqualStrings("beta", val.array[1].string);
-    try testing.expectEqualStrings("gamma", val.array[2].string);
+    try testing.expectEqual(@as(usize, 3), val.array.items.len);
+    try testing.expectEqualStrings("alpha", val.array.items[0].string);
+    try testing.expectEqualStrings("beta", val.array.items[1].string);
+    try testing.expectEqualStrings("gamma", val.array.items[2].string);
 }
 
 test "frontmatter quoted string" {
@@ -2692,9 +2692,9 @@ test "select filters array by field equality" {
         "# H1\n## H2a\n### H3\n## H2b\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
-    try testing.expectEqualStrings("H2a", val.array[0].record.get("text").?.string);
-    try testing.expectEqualStrings("H2b", val.array[1].record.get("text").?.string);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
+    try testing.expectEqualStrings("H2a", val.array.items[0].record.get("text").?.string);
+    try testing.expectEqualStrings("H2b", val.array.items[1].record.get("text").?.string);
 }
 
 test "select with not equal" {
@@ -2703,7 +2703,7 @@ test "select with not equal" {
         "# H1\n## H2\n### H3\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
 }
 
 test "select with greater than" {
@@ -2712,7 +2712,7 @@ test "select with greater than" {
         "# H1\n## H2\n### H3\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
 }
 
 test "select with less than or equal" {
@@ -2721,7 +2721,7 @@ test "select with less than or equal" {
         "# H1\n## H2\n### H3\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
 }
 
 test "select with and" {
@@ -2730,8 +2730,8 @@ test "select with and" {
         "# H1\n## H2\n### H3\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("H2", val.array[0].record.get("text").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("H2", val.array.items[0].record.get("text").?.string);
 }
 
 test "select with or" {
@@ -2740,7 +2740,7 @@ test "select with or" {
         "# H1\n## H2\n### H3\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
 }
 
 test "select with not" {
@@ -2749,7 +2749,7 @@ test "select with not" {
         "# H1\n## H2\n### H3\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
 }
 
 test "select returns empty array when nothing matches" {
@@ -2758,22 +2758,22 @@ test "select returns empty array when nothing matches" {
         "# H1\n## H2\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 0), val.array.len);
+    try testing.expectEqual(@as(usize, 0), val.array.items.len);
 }
 
 test "select on links by kind" {
     const doc = "Check [link](https://example.com) and [[wikilink]].\n";
     const val = testEval("links | select(.kind == \"wikilink\")", doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("wikilink", val.array[0].record.get("target").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("wikilink", val.array.items[0].record.get("target").?.string);
 }
 
 test "select on codeblocks by language" {
     const doc = "```go\nfunc main() {}\n```\n```zig\nconst x = 1;\n```\n";
     const val = testEval("codeblocks | select(.language == \"go\")", doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
 }
 
 // contains() tests
@@ -2785,7 +2785,7 @@ test "contains on field" {
         doc,
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
 }
 
 test "contains no match" {
@@ -2795,7 +2795,7 @@ test "contains no match" {
         doc,
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 0), val.array.len);
+    try testing.expectEqual(@as(usize, 0), val.array.items.len);
 }
 
 test "contains on heading text" {
@@ -2804,8 +2804,8 @@ test "contains on heading text" {
         "# Intro\n## API Reference\n## Other\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("API Reference", val.array[0].record.get("text").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("API Reference", val.array.items[0].record.get("text").?.string);
 }
 
 // startswith() tests
@@ -2817,7 +2817,7 @@ test "startswith on field" {
         doc,
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
 }
 
 test "startswith no match" {
@@ -2827,15 +2827,15 @@ test "startswith no match" {
         doc,
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 0), val.array.len);
+    try testing.expectEqual(@as(usize, 0), val.array.items.len);
 }
 
 test "select string equality on tags" {
     const doc = "Some #draft and #review text.\n";
     const val = testEval("tags | select(.name == \"draft\")", doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("draft", val.array[0].record.get("name").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("draft", val.array.items[0].record.get("name").?.string);
 }
 
 // first, last, count tests
@@ -2886,19 +2886,19 @@ test "map extracts field" {
         "# A\n## B\n### C\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 3), val.array.len);
-    try testing.expectEqualStrings("A", val.array[0].string);
-    try testing.expectEqualStrings("B", val.array[1].string);
-    try testing.expectEqualStrings("C", val.array[2].string);
+    try testing.expectEqual(@as(usize, 3), val.array.items.len);
+    try testing.expectEqualStrings("A", val.array.items[0].string);
+    try testing.expectEqualStrings("B", val.array.items[1].string);
+    try testing.expectEqualStrings("C", val.array.items[2].string);
 }
 
 test "map on links targets" {
     const doc = "Visit [a](https://a.com) and [b](https://b.com).\n";
     const val = testEval("links | map(.target)", doc).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
-    try testing.expectEqualStrings("https://a.com", val.array[0].string);
-    try testing.expectEqualStrings("https://b.com", val.array[1].string);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
+    try testing.expectEqualStrings("https://a.com", val.array.items[0].string);
+    try testing.expectEqualStrings("https://b.com", val.array.items[1].string);
 }
 
 // unique tests
@@ -2909,7 +2909,7 @@ test "unique deduplicates strings" {
         "[a](https://x.com) and [b](https://x.com) and [c](https://y.com).\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
 }
 
 // reverse tests
@@ -2920,10 +2920,10 @@ test "reverse array" {
         "# A\n## B\n### C\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 3), val.array.len);
-    try testing.expectEqualStrings("C", val.array[0].string);
-    try testing.expectEqualStrings("B", val.array[1].string);
-    try testing.expectEqualStrings("A", val.array[2].string);
+    try testing.expectEqual(@as(usize, 3), val.array.items.len);
+    try testing.expectEqualStrings("C", val.array.items[0].string);
+    try testing.expectEqualStrings("B", val.array.items[1].string);
+    try testing.expectEqualStrings("A", val.array.items[2].string);
 }
 
 // sort tests
@@ -2934,10 +2934,10 @@ test "sort by field" {
         "### C\n# A\n## B\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 3), val.array.len);
-    try testing.expectEqualStrings("A", val.array[0].string);
-    try testing.expectEqualStrings("B", val.array[1].string);
-    try testing.expectEqualStrings("C", val.array[2].string);
+    try testing.expectEqual(@as(usize, 3), val.array.items.len);
+    try testing.expectEqualStrings("A", val.array.items[0].string);
+    try testing.expectEqualStrings("B", val.array.items[1].string);
+    try testing.expectEqualStrings("C", val.array.items[2].string);
 }
 
 test "sort reverse" {
@@ -2946,7 +2946,7 @@ test "sort reverse" {
         "### C\n# A\n## B\n",
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqualStrings("C", val.array[0].string);
+    try testing.expectEqualStrings("C", val.array.items[0].string);
 }
 
 // group tests
@@ -2960,10 +2960,10 @@ test "group by field" {
     const standard = val.record.get("standard");
     try testing.expect(standard != null);
     try testing.expect(standard.? == .array);
-    try testing.expectEqual(@as(usize, 2), standard.?.array.len);
+    try testing.expectEqual(@as(usize, 2), standard.?.array.items.len);
     const wikilink = val.record.get("wikilink");
     try testing.expect(wikilink != null);
-    try testing.expectEqual(@as(usize, 1), wikilink.?.array.len);
+    try testing.expectEqual(@as(usize, 1), wikilink.?.array.items.len);
 }
 
 // Chained operations
@@ -3108,7 +3108,7 @@ test "keys on frontmatter" {
     try testing.expect(val == .array);
     var found_title = false;
     var found_draft = false;
-    for (val.array) |item| {
+    for (val.array.items) |item| {
         if (std.mem.eql(u8, item.string, "title")) found_title = true;
         if (std.mem.eql(u8, item.string, "draft")) found_draft = true;
     }
@@ -3178,8 +3178,8 @@ test "incoming finds linking files" {
     const target = try std.fs.path.join(alloc, &.{ tmp.path, "target.md" });
     const val = testEvalWithPaths("incoming", "# Target\n", target, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("wikilink", val.array[0].record.get("kind").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("wikilink", val.array.items[0].record.get("kind").?.string);
 }
 
 test "incoming returns empty when no links" {
@@ -3193,7 +3193,7 @@ test "incoming returns empty when no links" {
     const target = try std.fs.path.join(alloc, &.{ tmp.path, "target.md" });
     const val = testEvalWithPaths("incoming", "# Target\n", target, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 0), val.array.len);
+    try testing.expectEqual(@as(usize, 0), val.array.items.len);
 }
 
 test "incoming finds embed links" {
@@ -3207,8 +3207,8 @@ test "incoming finds embed links" {
     const target = try std.fs.path.join(alloc, &.{ tmp.path, "target.md" });
     const val = testEvalWithPaths("incoming", "# Target\n", target, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("embed", val.array[0].record.get("kind").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("embed", val.array.items[0].record.get("kind").?.string);
 }
 
 test "incoming finds embeds targeting non-md files" {
@@ -3222,8 +3222,8 @@ test "incoming finds embeds targeting non-md files" {
     const target = try std.fs.path.join(alloc, &.{ tmp.path, "image.jpg" });
     const val = testEvalWithPaths("incoming", "", target, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("embed", val.array[0].record.get("kind").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("embed", val.array.items[0].record.get("kind").?.string);
 }
 
 test "incoming finds wikilinks with explicit extension" {
@@ -3237,8 +3237,8 @@ test "incoming finds wikilinks with explicit extension" {
     const target = try std.fs.path.join(alloc, &.{ tmp.path, "target.md" });
     const val = testEvalWithPaths("incoming", "# Target\n", target, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("wikilink", val.array[0].record.get("kind").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("wikilink", val.array.items[0].record.get("kind").?.string);
 }
 
 test "scanIncoming source paths have no ./ prefix" {
@@ -3275,13 +3275,13 @@ test "exists adds field to link records" {
     const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
     const val = testEvalWithPaths("links | exists", doc, fp, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 2), val.array.len);
+    try testing.expectEqual(@as(usize, 2), val.array.items.len);
 
-    const first = val.array[0];
+    const first = val.array.items[0];
     try testing.expectEqualStrings("existing", first.record.get("target").?.string);
     try testing.expectEqual(true, first.record.get("exists").?.bool);
 
-    const second = val.array[1];
+    const second = val.array.items[1];
     try testing.expectEqualStrings("missing", second.record.get("target").?.string);
     try testing.expectEqual(false, second.record.get("exists").?.bool);
 }
@@ -3302,8 +3302,8 @@ test "exists with select filters broken links" {
         tmp.path,
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("bad", val.array[0].record.get("target").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("bad", val.array.items[0].record.get("target").?.string);
 }
 
 test "exists finds wikilink target in subdirectory" {
@@ -3318,8 +3318,8 @@ test "exists finds wikilink target in subdirectory" {
     const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
     const val = testEvalWithPaths("links | exists", doc, fp, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqual(true, val.array[0].record.get("exists").?.bool);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqual(true, val.array.items[0].record.get("exists").?.bool);
 }
 
 test "exists finds embed target in subdirectory" {
@@ -3334,8 +3334,8 @@ test "exists finds embed target in subdirectory" {
     const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
     const val = testEvalWithPaths("links | exists", doc, fp, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqual(true, val.array[0].record.get("exists").?.bool);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqual(true, val.array.items[0].record.get("exists").?.bool);
 }
 
 // resolve tests
@@ -3352,9 +3352,9 @@ test "resolve finds wikilink target in subdirectory" {
     const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
     const val = testEvalWithPaths("links | resolve", doc, fp, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
 
-    const resolved = val.array[0].record.get("path").?.string;
+    const resolved = val.array.items[0].record.get("path").?.string;
     try testing.expect(std.mem.endsWith(u8, resolved, "sub/target.md"));
 }
 
@@ -3369,9 +3369,9 @@ test "resolve adds path to link records" {
     const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
     const val = testEvalWithPaths("links | resolve", doc, fp, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
 
-    const resolved = val.array[0].record.get("path").?.string;
+    const resolved = val.array.items[0].record.get("path").?.string;
     try testing.expect(std.mem.endsWith(u8, resolved, "target.md"));
 }
 
@@ -3384,8 +3384,8 @@ test "resolve on unresolvable link returns original target" {
     const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
     const val = testEvalWithPaths("links | resolve", doc, fp, tmp.path).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 1), val.array.len);
-    try testing.expectEqualStrings("nonexistent", val.array[0].record.get("path").?.string);
+    try testing.expectEqual(@as(usize, 1), val.array.items.len);
+    try testing.expectEqualStrings("nonexistent", val.array.items[0].record.get("path").?.string);
 }
 
 test "exists called twice does not duplicate keys" {
@@ -3399,7 +3399,7 @@ test "exists called twice does not duplicate keys" {
     const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
     const val = testEvalWithPaths("links | exists | exists", doc, fp, tmp.path).?;
     try testing.expect(val == .array);
-    const rec = val.array[0].record;
+    const rec = val.array.items[0].record;
     // Count occurrences of "exists" key — should be exactly 1
     var count: usize = 0;
     for (rec.keys) |k| {
@@ -3419,7 +3419,7 @@ test "resolve called twice does not duplicate keys" {
     const fp = try std.fs.path.join(alloc, &.{ tmp.path, "source.md" });
     const val = testEvalWithPaths("links | resolve | resolve", doc, fp, tmp.path).?;
     try testing.expect(val == .array);
-    const rec = val.array[0].record;
+    const rec = val.array.items[0].record;
     var count: usize = 0;
     for (rec.keys) |k| {
         if (std.mem.eql(u8, k, "path")) count += 1;
@@ -3565,8 +3565,8 @@ test "toml: parse array" {
         code_doc,
     ).?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 3), val.array.len);
-    try testing.expectEqualStrings("a", val.array[0].string);
+    try testing.expectEqual(@as(usize, 3), val.array.items.len);
+    try testing.expectEqualStrings("a", val.array.items[0].string);
 }
 
 test "toml: parse section headers" {
@@ -3757,16 +3757,16 @@ test "+= with multiple items" {
 test "array literal evaluates to array" {
     const val = testEval("[\"a\", \"b\", \"c\"]", "").?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 3), val.array.len);
-    try testing.expectEqualStrings("a", val.array[0].string);
-    try testing.expectEqualStrings("b", val.array[1].string);
-    try testing.expectEqualStrings("c", val.array[2].string);
+    try testing.expectEqual(@as(usize, 3), val.array.items.len);
+    try testing.expectEqualStrings("a", val.array.items[0].string);
+    try testing.expectEqualStrings("b", val.array.items[1].string);
+    try testing.expectEqualStrings("c", val.array.items[2].string);
 }
 
 test "empty array literal" {
     const val = testEval("[]", "").?;
     try testing.expect(val == .array);
-    try testing.expectEqual(@as(usize, 0), val.array.len);
+    try testing.expectEqual(@as(usize, 0), val.array.items.len);
 }
 
 test "replace: body without frontmatter" {

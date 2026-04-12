@@ -9,6 +9,7 @@ pub const Comment = struct {
     kind: CommentKind,
     text: []const u8,
     line: usize,
+    source: []const u8 = "",
 };
 
 /// Parse HTML comments (`<!-- ... -->`) and Obsidian comments (`%% ... %%`)
@@ -37,6 +38,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                     .kind = .html,
                     .text = text,
                     .line = start_line,
+                    .source = content[pos .. end_pos + 3],
                 });
                 // Count newlines within the comment
                 for (content[pos .. end_pos + 3]) |c| {
@@ -57,6 +59,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                     .kind = .obsidian,
                     .text = text,
                     .line = start_line,
+                    .source = content[pos .. end_pos + 2],
                 });
                 for (content[pos .. end_pos + 2]) |c| {
                     if (c == '\n') line += 1;

@@ -12,6 +12,7 @@ pub const Link = struct {
     target: []const u8,
     text: []const u8,
     line: usize,
+    source: []const u8 = "",
 };
 
 /// Parse all links from markdown content.
@@ -36,6 +37,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                 .target = result.target,
                 .text = result.text,
                 .line = line_num,
+                .source = content[pos..result.end],
             });
             pos = result.end;
             continue;
@@ -48,6 +50,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                 .target = result.target,
                 .text = result.text,
                 .line = line_num,
+                .source = content[pos..result.end],
             });
             pos = result.end;
             continue;

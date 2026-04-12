@@ -4,6 +4,7 @@ pub const Heading = struct {
     depth: u3,
     text: []const u8,
     line: usize,
+    source: []const u8 = "",
 };
 
 /// Parse ATX headings from markdown content.
@@ -25,6 +26,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                 .depth = heading_info.depth,
                 .text = heading_info.text,
                 .line = line_num,
+                .source = line,
             });
         }
         line_num += 1;

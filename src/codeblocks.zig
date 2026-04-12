@@ -5,6 +5,7 @@ pub const CodeBlock = struct {
     content: []const u8,
     start_line: usize,
     end_line: usize,
+    source: []const u8 = "",
     /// Whether content was allocated separately (indented blocks).
     /// When true, content must be freed with the same allocator.
     allocated_content: bool = false,
@@ -66,6 +67,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                 .content = content[content_start..content_end],
                 .start_line = content_start_line - 1, // line of the opening fence
                 .end_line = end_line,
+                .source = content[line_start..pos],
             });
 
             line_num += 1;
@@ -78,6 +80,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
             try indent_content.appendSlice(allocator, stripped);
             try indent_content.appendSlice(allocator, "\n");
             var indent_end_line = line_num;
+            var indent_block_end = next;
             pos = next;
             line_num += 1;
 
@@ -92,6 +95,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                     try indent_content.appendSlice(allocator, il_stripped);
                     try indent_content.appendSlice(allocator, "\n");
                     indent_end_line = line_num;
+                    indent_block_end = il_next;
                     pos = il_next;
                     line_num += 1;
                 } else if (isBlankLine(il)) {
@@ -128,6 +132,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                 .content = try indent_content.toOwnedSlice(allocator),
                 .start_line = indent_start_line,
                 .end_line = indent_end_line,
+                .source = content[line_start..indent_block_end],
                 .allocated_content = true,
             });
             continue;

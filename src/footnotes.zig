@@ -4,6 +4,7 @@ pub const Footnote = struct {
     label: []const u8,
     text: []const u8,
     line: usize,
+    source: []const u8 = "",
 };
 
 /// Parse footnote definitions (`[^label]: text`) from markdown content.
@@ -25,6 +26,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                 .label = fn_info.label,
                 .text = fn_info.text,
                 .line = line_num,
+                .source = line,
             });
         }
         line_num += 1;

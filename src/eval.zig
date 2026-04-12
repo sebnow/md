@@ -1905,6 +1905,7 @@ fn headingToValue(arena: std.mem.Allocator, h: md.headings.Heading) Value {
         .{ "depth", .{ .int = @intCast(h.depth) } },
         .{ "text", .{ .string = h.text } },
         .{ "line", .{ .int = @intCast(h.line) } },
+        .{ "source", .{ .string = h.source } },
     });
 }
 
@@ -1914,6 +1915,7 @@ fn linkToValue(arena: std.mem.Allocator, l: md.links.Link) Value {
         .{ "target", .{ .string = l.target } },
         .{ "text", .{ .string = l.text } },
         .{ "line", .{ .int = @intCast(l.line) } },
+        .{ "source", .{ .string = l.source } },
     });
 }
 
@@ -1921,6 +1923,7 @@ fn tagToValue(arena: std.mem.Allocator, t: md.tags.Tag) Value {
     return recordFromPairs(arena, &.{
         .{ "name", .{ .string = t.name } },
         .{ "line", .{ .int = @intCast(t.line) } },
+        .{ "source", .{ .string = t.source } },
     });
 }
 
@@ -1930,6 +1933,7 @@ fn codeblockToValue(arena: std.mem.Allocator, b: md.codeblocks.CodeBlock) Value 
         .{ "content", .{ .string = b.content } },
         .{ "start_line", .{ .int = @intCast(b.start_line) } },
         .{ "end_line", .{ .int = @intCast(b.end_line) } },
+        .{ "source", .{ .string = b.source } },
     });
 }
 
@@ -1938,6 +1942,7 @@ fn commentToValue(arena: std.mem.Allocator, c: md.comments.Comment) Value {
         .{ "kind", .{ .string = @tagName(c.kind) } },
         .{ "text", .{ .string = c.text } },
         .{ "line", .{ .int = @intCast(c.line) } },
+        .{ "source", .{ .string = c.source } },
     });
 }
 
@@ -1946,6 +1951,7 @@ fn footnoteToValue(arena: std.mem.Allocator, f: md.footnotes.Footnote) Value {
         .{ "label", .{ .string = f.label } },
         .{ "text", .{ .string = f.text } },
         .{ "line", .{ .int = @intCast(f.line) } },
+        .{ "source", .{ .string = f.source } },
     });
 }
 
@@ -2467,6 +2473,73 @@ test "footnotes empty document" {
     const val = testEval("footnotes", "no footnotes\n").?;
     try testing.expect(val == .array);
     try testing.expectEqual(@as(usize, 0), val.array.items.len);
+}
+
+test "headings source field" {
+    const val = testEval("headings | first | .source", "# Title\nBody.\n").?;
+    try testing.expectEqualStrings("# Title", val.string);
+}
+
+test "links source field" {
+    const val = testEval("links | first | .source", "See [[target]] here.\n").?;
+    try testing.expectEqualStrings("[[target]]", val.string);
+}
+
+test "links source field for standard link" {
+    const val = testEval("links | first | .source", "See [text](url) here.\n").?;
+    try testing.expectEqualStrings("[text](url)", val.string);
+}
+
+test "links source field for image" {
+    const val = testEval("links | first | .source", "![alt](img.png)\n").?;
+    try testing.expectEqualStrings("![alt](img.png)", val.string);
+}
+
+test "links source field for embed" {
+    const val = testEval("links | first | .source", "![[embed]]\n").?;
+    try testing.expectEqualStrings("![[embed]]", val.string);
+}
+
+test "tags source field" {
+    const val = testEval("tags | first | .source", "text #mytag more\n").?;
+    try testing.expectEqualStrings("#mytag", val.string);
+}
+
+test "comments source field for html" {
+    const val = testEval("comments | first | .source", "<!-- hello -->\n").?;
+    try testing.expectEqualStrings("<!-- hello -->", val.string);
+}
+
+test "comments source field for obsidian" {
+    const val = testEval("comments | first | .source", "%% note %%\n").?;
+    try testing.expectEqualStrings("%% note %%", val.string);
+}
+
+test "codeblocks source field" {
+    const doc = "before\n```go\nfunc main() {}\n```\nafter\n";
+    const val = testEval("codeblocks | first | .source", doc).?;
+    try testing.expectEqualStrings("```go\nfunc main() {}\n```\n", val.string);
+}
+
+test "footnotes source field" {
+    const val = testEval("footnotes | first | .source", "[^1]: A note\n").?;
+    try testing.expectEqualStrings("[^1]: A note", val.string);
+}
+
+test "headings replace via source" {
+    const val = testEval(
+        "headings | first | replace(\"# New Title\")",
+        "# Old Title\nBody.\n",
+    ).?;
+    try testing.expectEqualStrings("# New Title\nBody.\n", val.string);
+}
+
+test "comments append via source" {
+    const val = testEval(
+        "comments | first | append(\"\\ninserted\")",
+        "%% marker %%\nContent.\n",
+    ).?;
+    try testing.expectEqualStrings("%% marker %%\ninserted\nContent.\n", val.string);
 }
 
 test "nodes extracts array" {

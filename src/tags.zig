@@ -3,6 +3,7 @@ const std = @import("std");
 pub const Tag = struct {
     name: []const u8,
     line: usize,
+    source: []const u8 = "",
 };
 
 /// Parse inline #tags from markdown content.
@@ -52,6 +53,7 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocato
                         try tags.append(allocator, .{
                             .name = name,
                             .line = line_num,
+                            .source = content[pos..tag_end],
                         });
                     }
                     pos = tag_end;

@@ -210,18 +210,21 @@ pub fn deleteField(allocator: std.mem.Allocator, content: []const u8, key: []con
     return editFields(allocator, content, &.{.{ .delete = key }});
 }
 
+pub const AppendArrayError = error{FieldNotAnArray} || std.mem.Allocator.Error;
+
 /// Append scalar items to a YAML array field, preserving all other content byte-for-byte.
 /// `new_items` are pre-serialized YAML scalar strings.
 /// - Block sequence: appends `  - <item>` lines after the last existing item.
 /// - Inline sequence `[a, b]`: inserts items before the closing `]`.
 /// - Field absent, null, or empty: creates a new block sequence with the items.
+/// Returns `error.FieldNotAnArray` if the field exists but holds a scalar value.
 /// Returns a newly allocated string; does not modify `content`.
 pub fn appendToArrayField(
     allocator: std.mem.Allocator,
     content: []const u8,
     key: []const u8,
     new_items: []const []const u8,
-) std.mem.Allocator.Error![]const u8 {
+) AppendArrayError![]const u8 {
     if (new_items.len == 0) return allocator.dupe(u8, content);
 
     const fm = extract(content) orelse {
@@ -242,6 +245,7 @@ pub fn appendToArrayField(
     const opening_end = @intFromPtr(fm.raw.ptr) - @intFromPtr(content.ptr);
 
     var result: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer result.deinit(allocator);
     try result.appendSlice(allocator, content[0..opening_end]);
 
     var pos: usize = 0;
@@ -286,7 +290,7 @@ pub fn appendToArrayField(
                 }
 
                 try result.appendSlice(allocator, line[bracket_in_line..]);
-            } else {
+            } else if (is_empty_value) {
                 // Block sequence or null/empty: write key line, then existing items, then new items
                 if (is_null_value) {
                     // Replace "key: null" / "key: ~" with bare "key:" line
@@ -309,6 +313,8 @@ pub fn appendToArrayField(
                     try result.appendSlice(allocator, item);
                     try result.appendSlice(allocator, "\n");
                 }
+            } else {
+                return error.FieldNotAnArray;
             }
         } else {
             try result.appendSlice(allocator, line);
@@ -695,4 +701,10 @@ test "appendToArrayField: zero new items returns unchanged content" {
     const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{});
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings(input, result);
+}
+
+test "appendToArrayField: scalar field returns FieldNotAnArray error" {
+    const input = "---\ntitle: Hello\n---\n";
+    const result = appendToArrayField(std.testing.allocator, input, "title", &.{"x"});
+    try std.testing.expectError(error.FieldNotAnArray, result);
 }

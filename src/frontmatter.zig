@@ -210,6 +210,126 @@ pub fn deleteField(allocator: std.mem.Allocator, content: []const u8, key: []con
     return editFields(allocator, content, &.{.{ .delete = key }});
 }
 
+/// Append scalar items to a YAML array field, preserving all other content byte-for-byte.
+/// `new_items` are pre-serialized YAML scalar strings.
+/// - Block sequence: appends `  - <item>` lines after the last existing item.
+/// - Inline sequence `[a, b]`: inserts items before the closing `]`.
+/// - Field absent, null, or empty: creates a new block sequence with the items.
+/// Returns a newly allocated string; does not modify `content`.
+pub fn appendToArrayField(
+    allocator: std.mem.Allocator,
+    content: []const u8,
+    key: []const u8,
+    new_items: []const []const u8,
+) std.mem.Allocator.Error![]const u8 {
+    if (new_items.len == 0) return allocator.dupe(u8, content);
+
+    const fm = extract(content) orelse {
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        try result.appendSlice(allocator, "---\n");
+        try result.appendSlice(allocator, key);
+        try result.appendSlice(allocator, ":\n");
+        for (new_items) |item| {
+            try result.appendSlice(allocator, "  - ");
+            try result.appendSlice(allocator, item);
+            try result.appendSlice(allocator, "\n");
+        }
+        try result.appendSlice(allocator, "---\n");
+        try result.appendSlice(allocator, content);
+        return result.toOwnedSlice(allocator);
+    };
+
+    const opening_end = @intFromPtr(fm.raw.ptr) - @intFromPtr(content.ptr);
+
+    var result: std.ArrayListUnmanaged(u8) = .empty;
+    try result.appendSlice(allocator, content[0..opening_end]);
+
+    var pos: usize = 0;
+    var found = false;
+
+    while (pos < fm.raw.len) {
+        const line_start = pos;
+        pos = nextLine(fm.raw, pos);
+        const line = fm.raw[line_start..pos];
+
+        if (!found and matchesKey(line, key)) {
+            found = true;
+
+            // Determine the value on the same line (after "key:")
+            var trim_pos: usize = key.len + 1;
+            while (trim_pos < line.len and (line[trim_pos] == ' ' or line[trim_pos] == '\t')) {
+                trim_pos += 1;
+            }
+            const rest = line[trim_pos..]; // e.g. "[a, b]\n" or "\n" or "null\n"
+
+            const is_null_value = std.mem.eql(u8, std.mem.trimRight(u8, rest, " \t\r\n"), "null") or
+                std.mem.eql(u8, std.mem.trimRight(u8, rest, " \t\r\n"), "~");
+            const is_empty_value = rest.len == 0 or rest[0] == '\n' or rest[0] == '\r' or is_null_value;
+
+            if (!is_empty_value and rest[0] == '[') {
+                // Inline sequence: insert items before the closing ']'
+                const bracket_end = std.mem.lastIndexOfScalar(u8, rest, ']') orelse {
+                    // Malformed inline array: write line as-is and fall through
+                    try result.appendSlice(allocator, line);
+                    continue;
+                };
+                const bracket_in_line = trim_pos + bracket_end;
+
+                try result.appendSlice(allocator, line[0..bracket_in_line]);
+
+                const inner = std.mem.trim(u8, rest[1..bracket_end], " \t");
+                for (new_items, 0..) |item, idx| {
+                    if (inner.len > 0 or idx > 0) {
+                        try result.appendSlice(allocator, ", ");
+                    }
+                    try result.appendSlice(allocator, item);
+                }
+
+                try result.appendSlice(allocator, line[bracket_in_line..]);
+            } else {
+                // Block sequence or null/empty: write key line, then existing items, then new items
+                if (is_null_value) {
+                    // Replace "key: null" / "key: ~" with bare "key:" line
+                    try result.appendSlice(allocator, key);
+                    try result.appendSlice(allocator, ":\n");
+                } else {
+                    try result.appendSlice(allocator, line);
+                }
+
+                // Write existing indented block items
+                while (pos < fm.raw.len and (fm.raw[pos] == ' ' or fm.raw[pos] == '\t')) {
+                    const item_line_start = pos;
+                    pos = nextLine(fm.raw, pos);
+                    try result.appendSlice(allocator, fm.raw[item_line_start..pos]);
+                }
+
+                // Append new items
+                for (new_items) |item| {
+                    try result.appendSlice(allocator, "  - ");
+                    try result.appendSlice(allocator, item);
+                    try result.appendSlice(allocator, "\n");
+                }
+            }
+        } else {
+            try result.appendSlice(allocator, line);
+        }
+    }
+
+    if (!found) {
+        // Append new field as block sequence before the closing delimiter
+        try result.appendSlice(allocator, key);
+        try result.appendSlice(allocator, ":\n");
+        for (new_items) |item| {
+            try result.appendSlice(allocator, "  - ");
+            try result.appendSlice(allocator, item);
+            try result.appendSlice(allocator, "\n");
+        }
+    }
+
+    try result.appendSlice(allocator, content[opening_end + fm.raw.len ..]);
+    return result.toOwnedSlice(allocator);
+}
+
 /// Check if a YAML line starts with "key:".
 fn matchesKey(line: []const u8, key: []const u8) bool {
     if (line.len < key.len + 1) return false;
@@ -493,4 +613,86 @@ test "editFields: TOML delete key" {
     });
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("+++\ntitle = \"Hello\"\n+++\nBody\n", result);
+}
+
+// appendToArrayField tests
+
+test "appendToArrayField: append to block sequence" {
+    const input = "---\ntags:\n  - a\n  - b\n---\nBody\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{"c"});
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntags:\n  - a\n  - b\n  - c\n---\nBody\n", result);
+}
+
+test "appendToArrayField: append to inline sequence" {
+    const input = "---\ntags: [a, b]\n---\nBody\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{"c"});
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntags: [a, b, c]\n---\nBody\n", result);
+}
+
+test "appendToArrayField: append to empty inline sequence" {
+    const input = "---\ntags: []\n---\nBody\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{"a"});
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntags: [a]\n---\nBody\n", result);
+}
+
+test "appendToArrayField: field absent creates block sequence" {
+    const input = "---\ntitle: Hello\n---\nBody\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{"a"});
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\ntags:\n  - a\n---\nBody\n", result);
+}
+
+test "appendToArrayField: empty field (null) creates block sequence" {
+    const input = "---\ntitle: Hello\naliases:\n---\nBody\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "aliases", &.{"foo"});
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntitle: Hello\naliases:\n  - foo\n---\nBody\n", result);
+}
+
+test "appendToArrayField: no frontmatter creates YAML frontmatter" {
+    const input = "# Body\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{"a"});
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntags:\n  - a\n---\n# Body\n", result);
+}
+
+test "appendToArrayField: preserves other fields byte-for-byte" {
+    const input = "---\npartOf: \"[[Brainly Payments System]]\"\nconniePageId: \"12345\"\ntags:\n  - old\n---\nBody\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{"new"});
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(
+        "---\npartOf: \"[[Brainly Payments System]]\"\nconniePageId: \"12345\"\ntags:\n  - old\n  - new\n---\nBody\n",
+        result,
+    );
+}
+
+test "appendToArrayField: append multiple items to block sequence" {
+    const input = "---\ntags:\n  - a\n---\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{ "b", "c" });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntags:\n  - a\n  - b\n  - c\n---\n", result);
+}
+
+test "appendToArrayField: append multiple items to inline sequence" {
+    const input = "---\ntags: [a]\n---\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{ "b", "c" });
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntags: [a, b, c]\n---\n", result);
+}
+
+test "appendToArrayField: field with null value becomes block sequence" {
+    const input = "---\ntags: null\n---\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{"a"});
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("---\ntags:\n  - a\n---\n", result);
+}
+
+test "appendToArrayField: zero new items returns unchanged content" {
+    const input = "---\ntags: [a]\n---\n";
+    const result = try appendToArrayField(std.testing.allocator, input, "tags", &.{});
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings(input, result);
 }

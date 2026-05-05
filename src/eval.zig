@@ -1779,9 +1779,28 @@ fn parseTomlArray(arena: std.mem.Allocator, inner: []const u8) Value {
     return .{ .array = .{ .items = slice } };
 }
 
+fn needsYamlQuoting(s: []const u8) bool {
+    if (s.len == 0) return true;
+    if (s[0] == '[' or s[0] == '{') return true;
+    if (std.mem.eql(u8, s, "true") or std.mem.eql(u8, s, "false") or
+        std.mem.eql(u8, s, "null") or std.mem.eql(u8, s, "~")) return true;
+    if (std.fmt.parseInt(i64, s, 10)) |_| return true else |_| {}
+    if (std.mem.indexOfScalar(u8, s, '.') != null) {
+        if (std.fmt.parseFloat(f64, s)) |_| return true else |_| {}
+    }
+    return false;
+}
+
 fn valueToYamlScalar(arena: std.mem.Allocator, val: Value) ?[]const u8 {
     return switch (val) {
-        .string => |s| s,
+        .string => |s| blk: {
+            if (!needsYamlQuoting(s)) break :blk s;
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            buf.append(arena, '"') catch @panic("out of memory");
+            writeTomlEscaped(buf.writer(arena), s) catch @panic("out of memory");
+            buf.append(arena, '"') catch @panic("out of memory");
+            break :blk buf.toOwnedSlice(arena) catch null;
+        },
         .int => |n| blk: {
             var buf: std.ArrayListUnmanaged(u8) = .empty;
             buf.writer(arena).print("{d}", .{n}) catch @panic("out of memory");
@@ -3191,6 +3210,69 @@ test "set on TOML frontmatter passes ints unquoted" {
     const val = testEval("frontmatter | set(.count, 42)", doc).?;
     try testing.expect(val == .string);
     try testing.expect(std.mem.indexOf(u8, val.string, "count = 42") != null);
+}
+
+test "set YAML string plain string needs no quotes" {
+    const doc = "---\ntitle: Old\n---\nbody\n";
+    const val = testEval("frontmatter | set(.title, \"Hello World\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "title: Hello World") != null);
+}
+
+test "set YAML string wikilink gets quoted" {
+    const doc = "---\ntitle: Old\n---\nbody\n";
+    const val = testEval("frontmatter | set(.partOf, \"[[Brainly Payments System]]\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "partOf: \"[[Brainly Payments System]]\"") != null);
+}
+
+test "set YAML string numeric string gets quoted" {
+    const doc = "---\ntitle: Old\n---\nbody\n";
+    const val = testEval("frontmatter | set(.pageId, \"12345\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "pageId: \"12345\"") != null);
+}
+
+test "set YAML string true gets quoted" {
+    const doc = "---\ntitle: Old\n---\nbody\n";
+    const val = testEval("frontmatter | set(.flag, \"true\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "flag: \"true\"") != null);
+}
+
+test "set YAML string null gets quoted" {
+    const doc = "---\ntitle: Old\n---\nbody\n";
+    const val = testEval("frontmatter | set(.x, \"null\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "x: \"null\"") != null);
+}
+
+test "set YAML string empty gets quoted" {
+    const doc = "---\ntitle: Old\n---\nbody\n";
+    const val = testEval("frontmatter | set(.x, \"\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "x: \"\"") != null);
+}
+
+test "set YAML string flow mapping gets quoted" {
+    const doc = "---\ntitle: Old\n---\nbody\n";
+    const val = testEval("frontmatter | set(.x, \"{key: val}\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "x: \"{key: val}\"") != null);
+}
+
+test "set YAML int literal is unquoted" {
+    const doc = "---\ntitle: Old\n---\nbody\n";
+    const val = testEval("frontmatter | set(.count, 42)", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "count: 42") != null);
+}
+
+test "set YAML string float gets quoted" {
+    const doc = "---\ntitle: Old\n---\nbody\n";
+    const val = testEval("frontmatter | set(.x, \"3.14\")", doc).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "x: \"3.14\"") != null);
 }
 
 // Section tests

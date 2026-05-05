@@ -1251,40 +1251,49 @@ pub const Evaluator = struct {
             else => self.content,
         } else self.content;
 
-        // Extract and parse frontmatter
-        const fm = md.frontmatter.extract(doc) orelse {
-            // No frontmatter — create one with the field set to the array
-            return self.buildDocWithFrontmatter(doc, field_name, new_arr, .yaml, null);
-        };
+        const fm = md.frontmatter.extract(doc);
 
-        const record = switch (fm.format) {
-            .yaml => parseFrontmatterToValue(self.arena, fm.raw),
-            .toml => parseTomlToValue(self.arena, fm.raw),
-        } orelse return null;
+        // TOML: re-render from record to preserve its format
+        if (fm != null and fm.?.format == .toml) {
+            const record = parseTomlToValue(self.arena, fm.?.raw) orelse return null;
+            const rec = switch (record) {
+                .record => |r| r,
+                else => return null,
+            };
+            const existing = rec.get(field_name);
+            const result_arr = if (existing) |ex| switch (ex) {
+                .array => |old| blk: {
+                    const combined = self.arena.alloc(Value, old.items.len + new_arr.len) catch @panic("out of memory");
+                    @memcpy(combined[0..old.items.len], old.items);
+                    @memcpy(combined[old.items.len..], new_arr);
+                    break :blk combined;
+                },
+                .null => new_arr,
+                else => {
+                    self.setErrorFmt("+= field '{s}' is not an array", .{field_name});
+                    return null;
+                },
+            } else new_arr;
+            return self.buildDocWithFrontmatter(doc, field_name, result_arr, .toml, fm);
+        }
 
-        const rec = switch (record) {
-            .record => |r| r,
-            else => return null,
-        };
+        // YAML (or no frontmatter): text-level mutation preserves other fields byte-for-byte
+        const serialized = self.arena.alloc([]const u8, new_arr.len) catch @panic("out of memory");
+        for (new_arr, 0..) |item, idx| {
+            serialized[idx] = valueToYamlScalar(self.arena, item) orelse {
+                self.setError("+= items must be scalar values", 0);
+                return null;
+            };
+        }
 
-        // Look up existing field
-        const existing = rec.get(field_name);
-        const result_arr = if (existing) |ex| switch (ex) {
-            .array => |old| blk: {
-                // Concatenate
-                const combined = self.arena.alloc(Value, old.items.len + new_arr.len) catch @panic("out of memory");
-                @memcpy(combined[0..old.items.len], old.items);
-                @memcpy(combined[old.items.len..], new_arr);
-                break :blk combined;
-            },
-            .null => new_arr,
-            else => {
+        const result = md.frontmatter.appendToArrayField(self.arena, doc, field_name, serialized) catch |err| switch (err) {
+            error.FieldNotAnArray => {
                 self.setErrorFmt("+= field '{s}' is not an array", .{field_name});
                 return null;
             },
-        } else new_arr;
-
-        return self.buildDocWithFrontmatter(doc, field_name, result_arr, fm.format, fm);
+            error.OutOfMemory => @panic("out of memory"),
+        };
+        return .{ .string = result };
     }
 
     fn buildDocWithFrontmatter(
@@ -3840,9 +3849,9 @@ test "+= append to inline array" {
         \\
     ;
     const out = testRender("frontmatter | .tags += [\"c\"]", doc).?;
-    try testing.expect(std.mem.indexOf(u8, out, "- a") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "- b") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "- c") != null);
+    // Inline format is preserved: [a, b, c]
+    try testing.expect(std.mem.indexOf(u8, out, "tags: [a, b, c]") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Body") != null);
 }
 
 test "+= preserves other fields" {

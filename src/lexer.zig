@@ -63,6 +63,20 @@ pub fn formatErrorWithPrefix(source: []const u8, pos: usize, message: []const u8
     return stream.getWritten();
 }
 
+/// Returns an advisory hint when an unexpected token appears immediately after
+/// a closed string literal — the signature of a string that ended earlier than
+/// intended. Returns null for all other error shapes.
+pub fn diagnosticHint(source: []const u8, pos: usize, message: []const u8) ?[]const u8 {
+    _ = message;
+    if (pos == 0) return null;
+    var i = pos;
+    while (i > 0 and (source[i - 1] == ' ' or source[i - 1] == '\t')) i -= 1;
+    if (i > 0 and source[i - 1] == '"') {
+        return "hint: if the string closed earlier than intended, escape a literal quote as \\\"; pass content out-of-band with --arg NAME=@file";
+    }
+    return null;
+}
+
 fn writeError(source: []const u8, pos: usize, message: []const u8, prefix_len: usize, writer: anytype) !void {
     // Find the line containing pos
     var line_start: usize = 0;
@@ -653,4 +667,36 @@ test "writeError long program: truncation marker visible" {
     try testing.expect(std.mem.indexOf(u8, msg, "...") != null);
     try testing.expect(std.mem.indexOf(u8, msg, "^") != null);
     try testing.expect(std.mem.indexOf(u8, msg, "some error") != null);
+}
+
+test "diagnosticHint: unexpected token after closed string" {
+    // DSL source: body | replace("a \\"b")
+    // "a \\" is a complete string (\\= escaped backslash, then " closes it).
+    // 'b' at index 21 is the unexpected token immediately after the closing quote.
+    const source = "body | replace(\"a \\\\\"b\")";
+    const hint = diagnosticHint(source, 21, "expected ')'");
+    try testing.expect(hint != null);
+    try testing.expect(std.mem.indexOf(u8, hint.?, "\\\"") != null);
+    try testing.expect(std.mem.indexOf(u8, hint.?, "--arg") != null);
+}
+
+test "diagnosticHint: no hint when previous char is not a closing quote" {
+    // "body | replace(" — error at EOF, previous char is '('
+    const source = "body | replace(";
+    const hint = diagnosticHint(source, source.len, "unexpected end of input");
+    try testing.expect(hint == null);
+}
+
+test "diagnosticHint: no hint at position zero" {
+    const hint = diagnosticHint("x", 0, "unexpected token");
+    try testing.expect(hint == null);
+}
+
+test "diagnosticHint: hint with whitespace between string and error token" {
+    // "replace(\"a\" b)" — space between closing quote and 'b'
+    const source = "replace(\"a\" b)";
+    // 'b' is at index 12; source[11] = ' ', source[10] = '"'
+    const hint = diagnosticHint(source, 12, "expected ')'");
+    try testing.expect(hint != null);
+    try testing.expect(std.mem.indexOf(u8, hint.?, "--arg") != null);
 }

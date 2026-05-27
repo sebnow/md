@@ -239,6 +239,11 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
             out.writeErr("md: ");
             out.writeErr(msg);
             out.writeErr("\n");
+            const e = parser.err.?;
+            if (md.lexer.diagnosticHint(args.program, e.pos, e.message)) |hint| {
+                out.writeErr(hint);
+                out.writeErr("\n");
+            }
         } else {
             out.writeErr("md: failed to parse program\n");
         }

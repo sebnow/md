@@ -70,20 +70,47 @@ fn writeError(source: []const u8, pos: usize, message: []const u8, prefix_len: u
     while (idx < pos and idx < source.len) : (idx += 1) {
         if (source[idx] == '\n') line_start = idx + 1;
     }
-
     var line_end: usize = pos;
     while (line_end < source.len and source[line_end] != '\n') : (line_end += 1) {}
-
     const line = source[line_start..line_end];
     const col = pos - line_start;
 
-    try writer.writeAll(line);
-    try writer.writeByte('\n');
+    // Emit a bounded window centered on col so the caret and message are always
+    // visible regardless of how long the line is.
+    const window_width: usize = 80;
+    const marker = "...";
+    const one_side = window_width - marker.len; // content chars when one side is clipped
+    const both_content = window_width - 2 * marker.len; // content when both sides are clipped
 
-    // Write caret at the right column, accounting for any prefix on the source line
-    for (0..col + prefix_len) |_| {
-        try writer.writeByte(' ');
-    }
+    const caret_in_display: usize = blk: {
+        if (line.len <= window_width) {
+            try writer.writeAll(line);
+            break :blk col;
+        }
+        if (col < one_side) {
+            // Error is near the start; clip right only.
+            try writer.writeAll(line[0..one_side]);
+            try writer.writeAll(marker);
+            break :blk col;
+        }
+        if (col >= line.len - one_side) {
+            // Error is near the end; clip left only.
+            const ws = line.len - one_side;
+            try writer.writeAll(marker);
+            try writer.writeAll(line[ws..]);
+            break :blk col - ws + marker.len;
+        }
+        // Error is in the middle; clip both sides, centering on col.
+        const half = both_content / 2;
+        const ws = col - half;
+        try writer.writeAll(marker);
+        try writer.writeAll(line[ws .. ws + both_content]);
+        try writer.writeAll(marker);
+        break :blk col - ws + marker.len;
+    };
+
+    try writer.writeByte('\n');
+    for (0..caret_in_display + prefix_len) |_| try writer.writeByte(' ');
     try writer.writeByte('^');
     try writer.writeByte(' ');
     try writer.writeAll(message);
@@ -607,4 +634,23 @@ test "bare at sign produces error" {
     const tok = lex.next();
     try testing.expectEqual(Token.Kind.err, tok.kind);
     try testing.expectEqualStrings("@", tok.text);
+}
+
+test "writeError long program: caret and message always visible" {
+    // A single-line program > 512 bytes; the old fixed-buffer approach cut off
+    // the caret and message for programs this long.
+    var buf: [512]u8 = undefined;
+    const source = "x" ** 550 ++ "==";
+    const msg = formatError(source, 550, "unexpected token", &buf);
+    try testing.expect(std.mem.indexOf(u8, msg, "^") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "unexpected token") != null);
+}
+
+test "writeError long program: truncation marker visible" {
+    var buf: [512]u8 = undefined;
+    const source = "x" ** 200;
+    const msg = formatError(source, 100, "some error", &buf);
+    try testing.expect(std.mem.indexOf(u8, msg, "...") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "^") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "some error") != null);
 }

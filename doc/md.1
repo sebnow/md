@@ -10,6 +10,7 @@
 .Op Fl -json
 .Op Fl -dir Ar directory
 .Op Fl i
+.Op Fl -arg Ar NAME=VALUE
 .Op Ar file
 .Sh DESCRIPTION
 .Nm
@@ -290,6 +291,15 @@ and
 .Ic resolve .
 .It Fl i
 Edit the file in-place. The program must produce a document string.
+.It Fl -arg Ar NAME=VALUE
+Bind a named parameter.
+The name is usable anywhere a value is expected in the program,
+written as
+.Li @NAME .
+The value is stored verbatim;
+no escape sequences are interpreted and no re-parsing occurs.
+This flag is repeatable.
+Duplicate names are an error.
 .It Fl h , Fl -help
 Show usage information.
 .El
@@ -334,6 +344,9 @@ Append after a section:
 .Pp
 Replace entire body:
 .Dl md 'body | replace(\&"New content.\en\&")' -i notes.md
+.Pp
+Replace body via a named parameter (no escaping required):
+.Dl md 'body | replace(@content)' --arg content=\&"New content.\&" -i notes.md
 .Pp
 Replace a heading directly:
 .Dl md 'headings | first | replace(\&"# New Title\&")' -i notes.md

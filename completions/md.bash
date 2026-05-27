@@ -3,7 +3,7 @@ _md() {
     _init_completion || return
 
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "--json --dir -i --help" -- "$cur"))
+        COMPREPLY=($(compgen -W "--json --dir -i --arg --help" -- "$cur"))
         return
     fi
 

@@ -39,6 +39,9 @@ pub const Token = struct {
         lbracket, // [
         rbracket, // ]
 
+        // Parameter reference (@name)
+        param_ref,
+
         // Special
         err,
         eof,
@@ -136,6 +139,7 @@ pub const Lexer = struct {
                 return self.single(.lt);
             },
             '"' => return self.lexString(),
+            '@' => return self.lexParamRef(),
             else => {
                 if (isDigit(c) or (c == '-' and self.pos + 1 < self.source.len and isDigit(self.source[self.pos + 1]))) {
                     return self.lexNumber();
@@ -176,6 +180,19 @@ pub const Lexer = struct {
                 break;
             }
         }
+    }
+
+    fn lexParamRef(self: *Lexer) Token {
+        const start = self.pos;
+        self.pos += 1; // skip '@'
+        if (self.pos >= self.source.len or !isIdentCont(self.source[self.pos])) {
+            return .{ .kind = .err, .text = self.source[start .. self.pos], .pos = start };
+        }
+        const name_start = self.pos;
+        while (self.pos < self.source.len and isIdentCont(self.source[self.pos])) {
+            self.pos += 1;
+        }
+        return .{ .kind = .param_ref, .text = self.source[name_start..self.pos], .pos = start };
     }
 
     fn lexString(self: *Lexer) Token {
@@ -559,4 +576,35 @@ test "formatError mid token" {
             "          ^ expected '=='",
         msg,
     );
+}
+
+test "param_ref token" {
+    var lex = Lexer.init("@name");
+    const tok = lex.next();
+    try testing.expectEqual(Token.Kind.param_ref, tok.kind);
+    try testing.expectEqualStrings("name", tok.text);
+    try testing.expectEqual(@as(usize, 0), tok.pos);
+}
+
+test "param_ref single char name" {
+    var lex = Lexer.init("@x");
+    const tok = lex.next();
+    try testing.expectEqual(Token.Kind.param_ref, tok.kind);
+    try testing.expectEqualStrings("x", tok.text);
+}
+
+test "param_ref inside expression" {
+    var lex = Lexer.init("replace(@content)");
+    _ = lex.next(); // replace
+    _ = lex.next(); // (
+    const tok = lex.next();
+    try testing.expectEqual(Token.Kind.param_ref, tok.kind);
+    try testing.expectEqualStrings("content", tok.text);
+}
+
+test "bare at sign produces error" {
+    var lex = Lexer.init("@ foo");
+    const tok = lex.next();
+    try testing.expectEqual(Token.Kind.err, tok.kind);
+    try testing.expectEqualStrings("@", tok.text);
 }

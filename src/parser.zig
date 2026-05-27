@@ -12,6 +12,7 @@ pub const Node = union(enum) {
     unary: Unary,
     comma: Comma,
     array_lit: []const *const Node,
+    param_ref: []const u8, // the referenced name (without @)
 
     pub const Pipeline = struct {
         stages: []const *const Node,
@@ -250,6 +251,7 @@ pub const Parser = struct {
     //         | identifier                          -- bare identifier (extractor)
     //         | literal
     //         | '(' comma ')'                      -- grouping
+    //         | @name                              -- parameter reference
     fn parsePrimary(self: *Parser) ?*const Node {
         switch (self.current.kind) {
             .dot => return self.parseFieldAccess(),
@@ -262,6 +264,7 @@ pub const Parser = struct {
             .kw_null => return self.parseNullLiteral(),
             .lparen => return self.parseGroup(),
             .lbracket => return self.parseArrayLit(),
+            .param_ref => return self.parseParamRef(),
             .err => {
                 self.setError("unexpected character", self.current.pos);
                 return null;
@@ -275,6 +278,14 @@ pub const Parser = struct {
                 return null;
             },
         }
+    }
+
+    fn parseParamRef(self: *Parser) ?*const Node {
+        const name = self.current.text;
+        self.advance();
+        const node = self.arena.create(Node) catch @panic("out of memory");
+        node.* = .{ .param_ref = name };
+        return node;
     }
 
     // '.' identifier ('.' identifier)*
@@ -822,4 +833,35 @@ test "function call with pipeline arg" {
     const inner = node.fn_call.args[0];
     try testing.expect(inner.* == .fn_call);
     try testing.expectEqualStrings("contains", inner.fn_call.name);
+}
+
+test "param_ref as function arg" {
+    const node = testParse("replace(@x)").?;
+    try testing.expect(node.* == .fn_call);
+    try testing.expectEqual(@as(usize, 1), node.fn_call.args.len);
+    try testing.expect(node.fn_call.args[0].* == .param_ref);
+    try testing.expectEqualStrings("x", node.fn_call.args[0].param_ref);
+}
+
+test "param_ref as set value" {
+    const node = testParse("set(.title, @t)").?;
+    try testing.expect(node.* == .fn_call);
+    try testing.expectEqual(@as(usize, 2), node.fn_call.args.len);
+    try testing.expect(node.fn_call.args[1].* == .param_ref);
+    try testing.expectEqualStrings("t", node.fn_call.args[1].param_ref);
+}
+
+test "param_ref as comparison rhs" {
+    const node = testParse(".text == @h").?;
+    try testing.expect(node.* == .binary);
+    try testing.expect(node.binary.right.* == .param_ref);
+    try testing.expectEqualStrings("h", node.binary.right.param_ref);
+}
+
+test "param_ref as array element" {
+    const node = testParse("[@x]").?;
+    try testing.expect(node.* == .array_lit);
+    try testing.expectEqual(@as(usize, 1), node.array_lit.len);
+    try testing.expect(node.array_lit[0].* == .param_ref);
+    try testing.expectEqualStrings("x", node.array_lit[0].param_ref);
 }

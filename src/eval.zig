@@ -15,6 +15,8 @@ const md = struct {
 const Node = parser_mod.Node;
 const Value = value_mod.Value;
 
+pub const ParamMap = std.StringHashMapUnmanaged([]const u8);
+
 pub const EvalError = struct {
     message: []const u8,
     pos: usize,
@@ -26,6 +28,7 @@ pub const Evaluator = struct {
     err: ?EvalError,
     file_path: ?[]const u8,
     dir_path: ?[]const u8,
+    params: ParamMap,
 
     pub fn init(arena: std.mem.Allocator, content: []const u8) Evaluator {
         return .{
@@ -34,6 +37,7 @@ pub const Evaluator = struct {
             .err = null,
             .file_path = null,
             .dir_path = null,
+            .params = .{},
         };
     }
 
@@ -47,6 +51,7 @@ pub const Evaluator = struct {
             .unary => |un| self.evalUnary(un, null),
             .comma => |c| self.evalComma(c),
             .array_lit => |elements| self.evalArrayLit(elements, null),
+            .param_ref => |name| self.resolveParam(name),
         };
     }
 
@@ -60,6 +65,7 @@ pub const Evaluator = struct {
             .unary => |un| self.evalUnary(un, input),
             .comma => |c| self.evalCommaWithInput(c, input),
             .array_lit => |elements| self.evalArrayLit(elements, input),
+            .param_ref => |name| self.resolveParam(name),
         };
     }
 
@@ -1381,6 +1387,14 @@ pub const Evaluator = struct {
             items[idx] = val orelse return null;
         }
         return .{ .array = .{ .items = items } };
+    }
+
+    fn resolveParam(self: *Evaluator, name: []const u8) ?Value {
+        if (self.params.get(name)) |val| {
+            return .{ .string = val };
+        }
+        self.setErrorFmt("unbound parameter: {s}", .{name});
+        return null;
     }
 
     fn setError(self: *Evaluator, message: []const u8, pos: usize) void {
@@ -4068,4 +4082,61 @@ test "replace: error on non-string argument" {
     const result = evaluator.eval(node);
     try testing.expect(result == null);
     try testing.expect(evaluator.err != null);
+}
+
+fn testEvalWithParams(program: []const u8, content: []const u8, params: ParamMap) ?Value {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+    var p = Parser.init(alloc, program);
+    const node = p.parse() orelse return null;
+    var evaluator = Evaluator.init(alloc, content);
+    evaluator.params = params;
+    return evaluator.eval(node);
+}
+
+test "param_ref resolves to bound string" {
+    var params = ParamMap{};
+    try params.put(std.heap.page_allocator, "x", "hello world");
+    const val = testEvalWithParams("@x", "", params).?;
+    try testing.expect(val == .string);
+    try testing.expectEqualStrings("hello world", val.string);
+}
+
+test "param_ref passes value byte-for-byte" {
+    var params = ParamMap{};
+    const raw = "say \"hi\" then \\stop";
+    try params.put(std.heap.page_allocator, "x", raw);
+    const val = testEvalWithParams("@x", "", params).?;
+    try testing.expect(val == .string);
+    try testing.expectEqualStrings(raw, val.string);
+}
+
+test "param_ref unbound sets error naming the parameter" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+    var p = Parser.init(alloc, "@missing");
+    const node = p.parse().?;
+    var ev = Evaluator.init(alloc, "");
+    const result = ev.eval(node);
+    try testing.expect(result == null);
+    try testing.expect(ev.err != null);
+    try testing.expect(std.mem.indexOf(u8, ev.err.?.message, "missing") != null);
+}
+
+test "replace with param_ref replaces body" {
+    var params = ParamMap{};
+    try params.put(std.heap.page_allocator, "x", "new content\n");
+    const doc = "old content\n";
+    const val = testEvalWithParams("body | replace(@x)", doc, params).?;
+    try testing.expect(val == .string);
+    try testing.expectEqualStrings("new content\n", val.string);
+}
+
+test "param_ref in set and select" {
+    var params = ParamMap{};
+    try params.put(std.heap.page_allocator, "t", "Draft");
+    const doc = "---\ntitle: Old\n---\nBody.\n";
+    const val = testEvalWithParams("frontmatter | set(.title, @t)", doc, params).?;
+    try testing.expect(val == .string);
+    try testing.expect(std.mem.indexOf(u8, val.string, "Draft") != null);
 }

@@ -8,10 +8,11 @@ const usage =
     \\If no file is given, reads from stdin.
     \\
     \\Options:
-    \\  --json       Output in JSON format
-    \\  --dir <path> Directory for incoming/exists/resolve
-    \\  -i           Edit file in-place (for mutations)
-    \\  --help       Show this help message
+    \\  --json              Output in JSON format
+    \\  --dir <path>        Directory for incoming/exists/resolve
+    \\  -i                  Edit file in-place (for mutations)
+    \\  --arg NAME=VALUE    Bind a named parameter (repeatable)
+    \\  --help              Show this help message
     \\
     \\Extractors:
     \\  frontmatter  YAML or TOML frontmatter as a record
@@ -76,6 +77,19 @@ const usage =
     \\
 ;
 
+const ParamMap = md.eval.ParamMap;
+
+const BindError = error{ MissingEquals, DuplicateName };
+
+fn bindParam(arena: std.mem.Allocator, params: *ParamMap, spec: []const u8) BindError!void {
+    const eq_pos = std.mem.indexOfScalar(u8, spec, '=') orelse return error.MissingEquals;
+    const name = spec[0..eq_pos];
+    const value = spec[eq_pos + 1 ..];
+    const result = params.getOrPut(arena, name) catch @panic("out of memory");
+    if (result.found_existing) return error.DuplicateName;
+    result.value_ptr.* = value;
+}
+
 const max_file_size = 64 * 1024 * 1024; // 64 MiB
 
 const Output = struct {
@@ -137,6 +151,7 @@ const Args = struct {
     json: bool = false,
     in_place: bool = false,
     dir: ?[]const u8 = null,
+    params: ParamMap = .{},
 };
 
 fn run(arena: std.mem.Allocator, out: *Output) !void {
@@ -155,6 +170,26 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
             args.dir = arg_iter.next() orelse {
                 out.writeErr("md: --dir requires a value\n");
                 return error.MissingArgument;
+            };
+        } else if (std.mem.eql(u8, arg, "--arg")) {
+            const spec = arg_iter.next() orelse {
+                out.writeErr("md: --arg requires NAME=VALUE\n");
+                return error.MissingArgument;
+            };
+            bindParam(arena, &args.params, spec) catch |err| switch (err) {
+                error.MissingEquals => {
+                    out.writeErr("md: --arg: missing '=' in '");
+                    out.writeErr(spec);
+                    out.writeErr("'\n");
+                    return error.MissingArgument;
+                },
+                error.DuplicateName => {
+                    const eq = std.mem.indexOfScalar(u8, spec, '=').?;
+                    out.writeErr("md: --arg: duplicate parameter '");
+                    out.writeErr(spec[0..eq]);
+                    out.writeErr("'\n");
+                    return error.MissingArgument;
+                },
             };
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try out.write(usage);
@@ -198,6 +233,7 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
     var evaluator = md.eval.Evaluator.init(arena, content);
     evaluator.file_path = args.file;
     evaluator.dir_path = args.dir;
+    evaluator.params = args.params;
 
     const result = evaluator.eval(node) orelse {
         if (evaluator.err) |eval_err| {
@@ -277,4 +313,39 @@ fn printError(out: *Output, err: anyerror) void {
     out.writeErr("md: ");
     out.writeErr(msg);
     out.writeErr("\n");
+}
+
+// Tests
+
+const testing = std.testing;
+
+test "bindParam literal value" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var params = ParamMap{};
+    try bindParam(arena.allocator(), &params, "x=hello world");
+    try testing.expectEqualStrings("hello world", params.get("x").?);
+}
+
+test "bindParam value with equals sign" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var params = ParamMap{};
+    try bindParam(arena.allocator(), &params, "x=a=b");
+    try testing.expectEqualStrings("a=b", params.get("x").?);
+}
+
+test "bindParam missing equals" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var params = ParamMap{};
+    try testing.expectError(error.MissingEquals, bindParam(arena.allocator(), &params, "xnoeq"));
+}
+
+test "bindParam duplicate name" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var params = ParamMap{};
+    try bindParam(arena.allocator(), &params, "x=a");
+    try testing.expectError(error.DuplicateName, bindParam(arena.allocator(), &params, "x=b"));
 }

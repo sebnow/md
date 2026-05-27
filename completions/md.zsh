@@ -6,6 +6,7 @@ _md() {
         '--json[Output in JSON format]' \
         '--dir[Directory for incoming/exists/resolve]:directory:_directories' \
         '-i[Edit file in-place]' \
+        '*--arg[Bind a named parameter]:NAME=VALUE:' \
         '--help[Show help message]' \
         '*:file:_files -g "*.md"'
 }

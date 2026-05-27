@@ -22,6 +22,8 @@ If no file is given, reads from stdin.
 - `--json` — output in JSON format
 - `--dir <path>` — directory for `incoming`/`exists`/`resolve`
 - `-i` — edit file in-place (for mutations)
+- `--arg NAME=VALUE` — bind a named parameter (repeatable);
+  reference as `@NAME` anywhere a value is expected
 
 ## Extractors
 
@@ -193,6 +195,9 @@ md 'nodes | skip_until(.type == "heading" and .text == "Notes")
 
 # Replace a heading directly
 md 'headings | first | replace("# New Title")' -i notes.md
+
+# Replace body using a named parameter (avoids escaping)
+md 'body | replace(@content)' --arg content="New body text." -i notes.md
 
 # Replace an Obsidian comment
 md 'comments | select(.kind == "obsidian") | first

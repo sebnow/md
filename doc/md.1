@@ -296,7 +296,22 @@ Bind a named parameter.
 The name is usable anywhere a value is expected in the program,
 written as
 .Li @NAME .
-The value is stored verbatim;
+When
+.Ar VALUE
+begins with
+.Li @ ,
+the remainder is a filesystem path whose contents become the value
+.Pq e.g.\& Ar notes=@/tmp/notes.md .
+Otherwise
+.Ar VALUE
+is used verbatim.
+To pass a literal value that begins with
+.Li @ ,
+use
+.Li @@
+as the prefix
+.Pq e.g.\& Ar x=@@foo No gives the value Li @foo .
+Values are stored verbatim;
 no escape sequences are interpreted and no re-parsing occurs.
 This flag is repeatable.
 Duplicate names are an error.
@@ -347,6 +362,9 @@ Replace entire body:
 .Pp
 Replace body via a named parameter (no escaping required):
 .Dl md 'body | replace(@content)' --arg content=\&"New content.\&" -i notes.md
+.Pp
+Replace a marker section from a file (large or punctuation-heavy content):
+.Dl md 'nodes | skip_until(.text == \&"begin notes\&") | take_until(.text == \&"end notes\&") | replace(@notes)' --arg notes=@/tmp/notes.md -i notes.md
 .Pp
 Replace a heading directly:
 .Dl md 'headings | first | replace(\&"# New Title\&")' -i notes.md

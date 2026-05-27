@@ -23,7 +23,10 @@ If no file is given, reads from stdin.
 - `--dir <path>` — directory for `incoming`/`exists`/`resolve`
 - `-i` — edit file in-place (for mutations)
 - `--arg NAME=VALUE` — bind a named parameter (repeatable);
-  reference as `@NAME` anywhere a value is expected
+  reference as `@NAME` anywhere a value is expected.
+  When `VALUE` begins with `@`, the remainder is a file path
+  whose contents become the value (`--arg notes=@/tmp/notes.md`).
+  To pass a literal value that starts with `@`, use `@@` (`--arg x=@@literal`).
 
 ## Extractors
 
@@ -198,6 +201,10 @@ md 'headings | first | replace("# New Title")' -i notes.md
 
 # Replace body using a named parameter (avoids escaping)
 md 'body | replace(@content)' --arg content="New body text." -i notes.md
+
+# Replace a marker section from a file (no shell escaping required)
+md 'nodes | skip_until(.text == "begin notes") | take_until(.text == "end notes") | replace(@notes)' \
+   --arg notes=@/tmp/notes.md -i notes.md
 
 # Replace an Obsidian comment
 md 'comments | select(.kind == "obsidian") | first

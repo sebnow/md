@@ -79,12 +79,24 @@ const usage =
 
 const ParamMap = md.eval.ParamMap;
 
-const BindError = error{ MissingEquals, DuplicateName };
+const BindError = error{ MissingEquals, DuplicateName, FileReadFailed };
 
 fn bindParam(arena: std.mem.Allocator, params: *ParamMap, spec: []const u8) BindError!void {
     const eq_pos = std.mem.indexOfScalar(u8, spec, '=') orelse return error.MissingEquals;
     const name = spec[0..eq_pos];
-    const value = spec[eq_pos + 1 ..];
+    const raw_value = spec[eq_pos + 1 ..];
+
+    const value: []const u8 = if (raw_value.len > 0 and raw_value[0] == '@') blk: {
+        if (raw_value.len > 1 and raw_value[1] == '@') {
+            // @@ prefix: literal value beginning with @
+            break :blk raw_value[1..];
+        }
+        const path = raw_value[1..];
+        const file = std.fs.cwd().openFile(path, .{}) catch return error.FileReadFailed;
+        defer file.close();
+        break :blk file.readToEndAlloc(arena, max_file_size) catch return error.FileReadFailed;
+    } else raw_value;
+
     const result = params.getOrPut(arena, name) catch @panic("out of memory");
     if (result.found_existing) return error.DuplicateName;
     result.value_ptr.* = value;
@@ -187,6 +199,13 @@ fn run(arena: std.mem.Allocator, out: *Output) !void {
                     const eq = std.mem.indexOfScalar(u8, spec, '=').?;
                     out.writeErr("md: --arg: duplicate parameter '");
                     out.writeErr(spec[0..eq]);
+                    out.writeErr("'\n");
+                    return error.MissingArgument;
+                },
+                error.FileReadFailed => {
+                    const eq = std.mem.indexOfScalar(u8, spec, '=').?;
+                    out.writeErr("md: --arg: cannot read file '");
+                    out.writeErr(spec[eq + 2 ..]); // skip '=' and '@'
                     out.writeErr("'\n");
                     return error.MissingArgument;
                 },
@@ -348,4 +367,60 @@ test "bindParam duplicate name" {
     var params = ParamMap{};
     try bindParam(arena.allocator(), &params, "x=a");
     try testing.expectError(error.DuplicateName, bindParam(arena.allocator(), &params, "x=b"));
+}
+
+test "bindParam file value" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(testing.allocator, "{s}/val.txt", .{dir_path});
+    defer testing.allocator.free(file_path);
+    const f = try std.fs.createFileAbsolute(file_path, .{});
+    try f.writeAll("content from file");
+    f.close();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var params = ParamMap{};
+    const spec = try std.fmt.allocPrint(testing.allocator, "x=@{s}", .{file_path});
+    defer testing.allocator.free(spec);
+    try bindParam(arena.allocator(), &params, spec);
+    try testing.expectEqualStrings("content from file", params.get("x").?);
+}
+
+test "bindParam file value with special chars" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const file_path = try std.fmt.allocPrint(testing.allocator, "{s}/notes.md", .{dir_path});
+    defer testing.allocator.free(file_path);
+    const content = "line one\n\"quoted\"\nback\\slash\n\nempty above\n";
+    const f = try std.fs.createFileAbsolute(file_path, .{});
+    try f.writeAll(content);
+    f.close();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var params = ParamMap{};
+    const spec = try std.fmt.allocPrint(testing.allocator, "notes=@{s}", .{file_path});
+    defer testing.allocator.free(spec);
+    try bindParam(arena.allocator(), &params, spec);
+    try testing.expectEqualStrings(content, params.get("notes").?);
+}
+
+test "bindParam double-at escapes literal at" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var params = ParamMap{};
+    try bindParam(arena.allocator(), &params, "x=@@foo");
+    try testing.expectEqualStrings("@foo", params.get("x").?);
+}
+
+test "bindParam unreadable file returns error" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var params = ParamMap{};
+    try testing.expectError(error.FileReadFailed, bindParam(arena.allocator(), &params, "x=@/tmp/md_no_such_file_xyz_12345.txt"));
 }
